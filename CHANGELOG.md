@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.2] - 2026-11-02
+
+### Fixed
+- **Database Engine-Level Read-Only Mode (Security):** Safe Mode now sets native database session-level read-only constraints (`PRAGMA query_only = ON` in SQLite, `SET default_transaction_read_only = ON` in PostgreSQL, `SET SESSION TRANSACTION READ ONLY` in MySQL) preventing sequence advancement (`nextval`), filesystem writes (`INTO OUTFILE`), and mutations at the database core.
+- **`--read-only` Startup Integrity (Security):** Guarded `on_mount` to ensure sample demo tables and mock records are never written when opening SQLite in Safe Mode / Read-Only.
+- **String Tokenizer & Normal Mode Safety:** Masked string literals, double quotes, and PostgreSQL dollar-quoted blocks (`$$...$$`, `$tag$...$tag$`) before comment stripping, ensuring strings containing `WHERE` (e.g. `'WHERE -- str'` or `$$WHERE$$`) cannot bypass double-confirmation barriers.
+- **`RETURNING` DML Query Classification:** Correctly classified `INSERT / UPDATE / DELETE ... RETURNING` as data modification operations (`is_returning=True`, `is_select=False`), rendering returned rows while refreshing table counts and row statistics.
+- **PostgreSQL Schema & Identifier Management:** Corrected `get_row_count()` to join `pg_namespace` with `pg_class` by schema and table, quoting schema-qualified tables separately (`"schema"."table"`).
+- **SQL Export Target Detection:** Filtered out CTE definitions (`WITH ... AS (...)`) to resolve the true target table from the primary `FROM` clause while preserving schemas (`"schema"."table"`).
+- **JSON Serialization for Database Types:** Added custom serialization in `Exporter.to_json()` for `Decimal`, `datetime`, `date`, `time`, `UUID`, and `bytes` to prevent `TypeError`.
+- **SQL Beautifier Dollar-Quote Support:** Added support for PostgreSQL dollar-quoted string literals (`$$...$$`) to ensure inner SQL content is preserved verbatim without casing modifications.
+- **Explorer Identifier Quoting:** Added engine-specific identifier quoting for table clicks and queries (`[table]` in SQLite, `"schema"."table"` in PostgreSQL, and `` `table` `` in MySQL) avoiding syntax errors on reserved names like `order` or `group`.
+
 ## [0.1.1] - 2026-11-02
 
 ### Fixed

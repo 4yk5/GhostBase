@@ -75,6 +75,38 @@ class DatabaseEngine:
             autocommit=True,
         )
 
+    def set_read_only(self, enabled: bool):
+        """Configure database engine session-level Read-Only mode."""
+        if not self.conn:
+            return
+        try:
+            cur = self.conn.cursor()
+            if self.db_type == "sqlite":
+                val = "ON" if enabled else "OFF"
+                cur.execute(f"PRAGMA query_only = {val};")
+            elif self.db_type == "postgresql":
+                mode = "ON" if enabled else "OFF"
+                cur.execute(f"SET default_transaction_read_only = {mode};")
+            elif self.db_type == "mysql":
+                mode = "READ ONLY" if enabled else "READ WRITE"
+                cur.execute(f"SET SESSION TRANSACTION {mode};")
+        except Exception:
+            pass
+
+    def quote_table_name(self, table_name: str) -> str:
+        """Properly quote table identifier for queries based on database engine."""
+        if not table_name:
+            return ""
+        if self.db_type == "postgresql":
+            if "." in table_name:
+                s, t = table_name.split(".", 1)
+                return f'"{s}"."{t}"'
+            return f'"{table_name}"'
+        elif self.db_type == "mysql":
+            return f"`{table_name}`"
+        else:  # sqlite
+            return f"[{table_name}]"
+
     # --- Schema discovery ---
 
     def get_tables(self) -> List[str]:
@@ -266,16 +298,28 @@ class DatabaseEngine:
             if self.db_type == "sqlite":
                 cur.execute(f"SELECT COUNT(*) FROM [{table_name}];")
             elif self.db_type == "postgresql":
-                clean_name = table_name.split(".", 1)[-1]
+                schema = "public"
+                tbl = table_name
+                if "." in table_name:
+                    schema, tbl = table_name.split(".", 1)
+
                 if fast_estimate:
                     try:
-                        cur.execute("SELECT reltuples::bigint FROM pg_class WHERE relname = %s;", (clean_name,))
+                        cur.execute(
+                            """
+                            SELECT c.reltuples::bigint
+                            FROM pg_class c
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE n.nspname = %s AND c.relname = %s;
+                            """,
+                            (schema, tbl),
+                        )
                         r = cur.fetchone()
                         if r and r[0] is not None and r[0] >= 0:
                             return int(r[0])
                     except Exception:
                         pass
-                cur.execute(f'SELECT COUNT(*) FROM "{table_name}";')
+                cur.execute(f'SELECT COUNT(*) FROM "{schema}"."{tbl}";')
             else:
                 if fast_estimate:
                     try:
@@ -299,20 +343,41 @@ class DatabaseEngine:
 
     # --- Query safety and formatting ---
 
+    @staticmethod
+    def _mask_strings_and_literals(sql: str) -> Tuple[str, List[str]]:
+        """
+        Extract and mask all string literals and quoted identifiers:
+        - PostgreSQL dollar-quoted strings ($$ ... $$ or $tag$ ... $tag$)
+        - Standard single-quoted strings ('...')
+        - Standard double-quoted strings / identifiers ("...")
+        - MySQL backtick identifiers (`...`)
+        """
+        literals = []
+        def _repl(m):
+            idx = len(literals)
+            literals.append(m.group(0))
+            return f" ___GB_LIT_{idx}___ "
+
+        pattern = r"(\$(?:[a-zA-Z_]\w*)?\$[\s\S]*?\$(?:[a-zA-Z_]\w*)?\$|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
+        masked = re.sub(pattern, _repl, sql)
+        return masked, literals
+
     def check_safety(self, query: str, is_safe_mode: bool = False) -> Tuple[bool, str]:
         """
         Check query safety.
-        In Safe Mode: Enforces strict Read-Only operations.
-        In Normal Mode: Intercepts destructive queries lacking constraints (e.g. DELETE/UPDATE without WHERE).
-        Comments (-- and /* */) and string literals are stripped to prevent syntax bypasses.
+        - Strings and dollar-quotes are masked FIRST so inner text ('WHERE ...') does not bypass checks.
+        - Comments (-- and /* */) are stripped second.
+        - In Safe Mode: Enforces strict Read-Only operations.
+        - In Normal Mode: Intercepts unconstrained destructive queries.
         """
-        # 1. Strip block comments /* ... */ and line comments -- ...
-        q_no_comments = re.sub(r"/\*[\s\S]*?\*/", " ", query)
+        # 1. Mask all string literals and dollar-quoted strings FIRST
+        masked, _ = self._mask_strings_and_literals(query)
+
+        # 2. Strip block comments /* ... */ and line comments -- ...
+        q_no_comments = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
         q_no_comments = re.sub(r"--[^\r\n]*", " ", q_no_comments)
 
-        # 2. Strip string literals & identifiers so keywords inside literals don't cause false detections
-        q_clean = re.sub(r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)", " ", q_no_comments)
-        q_clean = q_clean.strip()
+        q_clean = q_no_comments.strip()
         if not q_clean:
             return False, ""
 
@@ -332,6 +397,9 @@ class DatabaseEngine:
                 (r"\bGRANT\b", "GRANT statement"),
                 (r"\bREVOKE\b", "REVOKE statement"),
                 (r"\bVACUUM\b", "VACUUM statement"),
+                (r"\bNEXTVAL\s*\(", "NEXTVAL sequence advance"),
+                (r"\bINTO\s+OUTFILE\b", "INTO OUTFILE export"),
+                (r"\bINTO\s+DUMPFILE\b", "INTO DUMPFILE export"),
             ]
             for pattern, desc in write_keywords:
                 if re.search(pattern, q_upper):
@@ -357,8 +425,12 @@ class DatabaseEngine:
         return False, ""
 
     def explain_query(self, query: str) -> Dict[str, Any]:
-        clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", query)
+        masked, literals = self._mask_strings_and_literals(query)
+        clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
         clean_q = re.sub(r"--[^\r\n]*", " ", clean_q).strip().rstrip(";")
+        for idx, orig in enumerate(literals):
+            clean_q = clean_q.replace(f"___GB_LIT_{idx}___", orig)
+
         if not clean_q:
             return {"success": False, "error": "Query is empty"}
 
@@ -374,15 +446,7 @@ class DatabaseEngine:
         if not query or not query.strip():
             return query
 
-        # Mask string literals ('...'), double-quoted strings ("..."), and backticks (`...`)
-        literals = []
-        def _mask_literal(m):
-            idx = len(literals)
-            literals.append(m.group(0))
-            return f"___GB_LIT_{idx}___"
-
-        lit_pattern = r"('(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
-        masked = re.sub(lit_pattern, _mask_literal, query)
+        masked, literals = DatabaseEngine._mask_strings_and_literals(query)
 
         lines = masked.splitlines()
         comment_lines = []
@@ -441,6 +505,14 @@ class DatabaseEngine:
     def execute_query(self, query: str, max_rows: int = 1000) -> Dict[str, Any]:
         start = time.perf_counter()
         try:
+            # Check if query is DML/DDL write operation (even if it has RETURNING)
+            masked, _ = self._mask_strings_and_literals(query)
+            clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
+            clean_q = re.sub(r"--[^\r\n]*", " ", clean_q).strip().upper()
+            is_write_dml = bool(
+                re.search(r"\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|DELETE\s+|REPLACE\s+INTO|CREATE\s+|DROP\s+|ALTER\s+|TRUNCATE\s+)\b", clean_q)
+            )
+
             cur = self.conn.cursor()
             cur.execute(query)
             elapsed_ms = (time.perf_counter() - start) * 1000
@@ -469,9 +541,11 @@ class DatabaseEngine:
                     "columns": columns,
                     "rows": rows,
                     "row_count": len(rows),
+                    "affected_rows": max(cur.rowcount, len(rows)) if is_write_dml else 0,
                     "truncated": truncated,
                     "elapsed_ms": round(elapsed_ms, 2),
-                    "is_select": True,
+                    "is_select": not is_write_dml,
+                    "is_returning": is_write_dml,
                 }
             else:
                 if self.db_type in ("sqlite", "postgresql"):
@@ -481,6 +555,7 @@ class DatabaseEngine:
                     "affected_rows": max(cur.rowcount, 0),
                     "elapsed_ms": round(elapsed_ms, 2),
                     "is_select": False,
+                    "is_returning": False,
                 }
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start) * 1000

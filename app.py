@@ -342,7 +342,7 @@ class GhostBaseApp(App):
             yield Label(f"[{self.db.db_type_label()}]", id="db-type-label")
             yield Label(db_label, id="db-name-label")
             yield Label(safe_text, id="safe-badge", classes=safe_class)
-            yield Label("v0.1.1", id="version-label")
+            yield Label("v0.1.2", id="version-label")
 
         with Horizontal(id="main-container"):
             with Vertical(id="sidebar"):
@@ -389,14 +389,18 @@ class GhostBaseApp(App):
     # Lifecycle
 
     async def on_mount(self):
+        # Configure database engine level Read-Only mode if safe_mode is enabled
+        if self.safe_mode:
+            self.db.set_read_only(True)
+
         tables = self.db.get_tables()
-        # Only populate demo tables when explicitly requested, in-memory, or default sample.db
+        # Only populate demo tables when explicitly requested, in-memory, or default sample.db AND NOT in safe_mode
         is_default_sample = (
             self.populate_sample
             or self.db_path == ":memory:"
             or os.path.basename(os.path.abspath(self.db_path)) == "sample.db"
         )
-        if not tables and self.db.db_type == "sqlite" and is_default_sample:
+        if not tables and self.db.db_type == "sqlite" and is_default_sample and not self.safe_mode:
             self._create_sample_data()
             tables = self.db.get_tables()
 
@@ -408,8 +412,9 @@ class GhostBaseApp(App):
         if self.all_tables:
             first = self.all_tables[0]
             self.selected_table = first
+            quoted = self.db.quote_table_name(first)
             self.query_one("#query-box", TextArea).text = (
-                f"SELECT * FROM {first} LIMIT 50;"
+                f"SELECT * FROM {quoted} LIMIT 50;"
             )
             self.action_run_query()
             self._show_schema(first)
@@ -586,8 +591,9 @@ class GhostBaseApp(App):
         self._pending_destructive_query = None
         self._pending_destructive_time = 0.0
 
+        quoted = self.db.quote_table_name(t)
         self.query_one("#query-box", TextArea).text = (
-            f"SELECT * FROM {t} LIMIT 50;"
+            f"SELECT * FROM {quoted} LIMIT 50;"
         )
         self.action_run_query()
         self._show_schema(t, is_view=is_view)
@@ -673,9 +679,10 @@ class GhostBaseApp(App):
             self.last_columns = res["columns"]
             self.last_rows    = res["rows"]
 
-            # Detect target table for export if simple SELECT FROM table
-            m = re.search(r"\bFROM\s+[`\"\[]?([a-zA-Z0-9_\.]+)[`\"\]]?", query, flags=re.IGNORECASE)
-            self.last_query_table = m.group(1).split(".")[-1] if m else (self.selected_table or "query_result")
+            # Detect target table for export from final SELECT statement (ignoring CTE definitions)
+            main_q = re.sub(r"^WITH\s+[\s\S]*?\)\s*", "", query, flags=re.IGNORECASE)
+            m = re.search(r"\bFROM\s+([`\"\[]?[a-zA-Z0-9_\.]+(?:\"|\'|\]|`)?)", main_q, flags=re.IGNORECASE)
+            self.last_query_table = m.group(1).strip('`"[]') if m else (self.selected_table or "query_result")
 
             dt.add_columns(*self.last_columns)
             for row in self.last_rows:
@@ -703,8 +710,45 @@ class GhostBaseApp(App):
                 res_cnt.update(f"({rc} rows)")
 
             self._update_status_bar(row_count=rc, ms=ms)
+        elif res.get("is_returning"):
+            # DML with RETURNING: Render returned rows in DataTable, but treat as write operation
+            self.last_columns = res["columns"]
+            self.last_rows    = res["rows"]
+
+            # Extract target table from INSERT/UPDATE
+            m = re.search(r"\b(?:INTO|UPDATE)\s+([`\"\[]?[a-zA-Z0-9_\.]+(?:\"|\'|\]|`)?)", query, flags=re.IGNORECASE)
+            self.last_query_table = m.group(1).strip('`"[]') if m else (self.selected_table or "query_result")
+
+            dt.add_columns(*self.last_columns)
+            for row in self.last_rows:
+                styled = []
+                for val in row:
+                    if val is None:
+                        styled.append(Text("NULL", style="dim #6e7681"))
+                    elif isinstance(val, (int, float)):
+                        styled.append(Text(str(val), style="#79c0ff"))
+                    else:
+                        s = str(val).replace("\r\n", " ").replace("\n", " ").replace("\t", " ")
+                        if len(s) > 200:
+                            s = s[:197] + "..."
+                        styled.append(Text(s, style="#c9d1d9"))
+                dt.add_row(*styled)
+
+            aff = res.get("affected_rows", len(self.last_rows))
+            rc = res.get("row_count", len(self.last_rows))
+            ms = res["elapsed_ms"]
+            status.update(f"[bold green]OK[/] ({ms}ms)")
+            res_cnt.update(f"({rc} rows returned, {aff} affected)")
+            self.notify(f"Done — {aff} row(s) affected (RETURNING {rc} rows)")
+
+            # Refresh schema & row counts
+            self.all_tables = self.db.get_tables()
+            self.all_views  = self.db.get_views()
+            self._refresh_row_counts()
+            self._refresh_sidebar(self.all_tables, self.all_views)
+            self._update_status_bar(row_count=rc, ms=ms)
         else:
-            # Clear export cache so previous SELECT results are not mistakenly exported
+            # Pure DML / DDL statement -> clear export cache so previous SELECT results are not mistakenly exported
             self.last_columns = []
             self.last_rows    = []
             self.last_query_table = None
@@ -770,6 +814,9 @@ class GhostBaseApp(App):
         self.safe_mode = not self.safe_mode
         self._pending_destructive_query = None
         self._pending_destructive_time = 0.0
+
+        # Enforce/revoke database session level Read-Only
+        self.db.set_read_only(self.safe_mode)
 
         badge = self.query_one("#safe-badge", Label)
         if self.safe_mode:

@@ -1,9 +1,30 @@
 import csv
 import json
+import decimal
+import datetime
+import uuid
 from typing import List, Any
 
 
 class Exporter:
+    @staticmethod
+    def _json_serial(obj: Any) -> Any:
+        """Serialize non-standard types (Decimal, datetime, UUID, bytes) for JSON export."""
+        if isinstance(obj, (datetime.date, datetime.datetime, datetime.time)):
+            return obj.isoformat()
+        if isinstance(obj, decimal.Decimal):
+            return int(obj) if (obj % 1 == 0) else float(obj)
+        if isinstance(obj, uuid.UUID):
+            return str(obj)
+        if isinstance(obj, (bytes, bytearray)):
+            try:
+                return obj.decode("utf-8")
+            except Exception:
+                return obj.hex()
+        if hasattr(obj, "__str__"):
+            return str(obj)
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
     @staticmethod
     def _dedup_columns(columns: List[str]) -> List[str]:
         seen = {}
@@ -21,6 +42,10 @@ class Exporter:
     @staticmethod
     def _escape_ident(ident: str) -> str:
         s = str(ident).strip()
+        if "." in s:
+            parts = s.split(".")
+            return ".".join(f'"{p.replace(chr(34), chr(34)*2)}"' for p in parts)
+
         reserved = {
             "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BETWEEN", "BY", "CASE",
             "CHECK", "COLUMN", "CONSTRAINT", "CREATE", "CROSS", "CURRENT_DATE",
@@ -52,7 +77,7 @@ class Exporter:
         for r in rows:
             data.append(dict(zip(clean_cols, r)))
         with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False, default=Exporter._json_serial)
 
     @staticmethod
     def to_markdown(columns: List[str], rows: List[List[Any]], output_path: str):
@@ -85,7 +110,7 @@ class Exporter:
                         vals.append("NULL")
                     elif isinstance(v, bool):
                         vals.append("TRUE" if v else "FALSE")
-                    elif isinstance(v, (int, float)):
+                    elif isinstance(v, (int, float, decimal.Decimal)):
                         vals.append(str(v))
                     else:
                         escaped = str(v).replace("'", "''")
