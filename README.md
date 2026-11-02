@@ -19,7 +19,7 @@
 [![UI: Textual](https://img.shields.io/badge/UI-Textual-bd93f9.svg)](https://github.com/Textualize/textual)
 
 <p align="center">
-  <img src="assets/ghostbase-main.svg" alt="GhostBase Terminal Studio" width="100%">
+  <img src="assets/ghostbase-demo.png" alt="GhostBase Terminal Studio" width="100%">
 </p>
 
 ---
@@ -55,9 +55,6 @@ Opening **DBeaver** or **DataGrip** just to run a quick `SELECT`, inspect an ind
 - ⚡ **1-Key Query Plan (`Ctrl + P`):**
   - Run instant execution plans (`EXPLAIN QUERY PLAN` / `EXPLAIN`) on any query to see index usage and bottlenecks.
 
-<p align="center">
-  <img src="assets/ghostbase-explain.svg" alt="GhostBase 1-Key EXPLAIN Query Plan" width="100%">
-</p>
 
 - 🔌 **Universal Database Support:** Connects natively to **SQLite**, **PostgreSQL**, and **MySQL**.
 - 🔍 **Zero-Config `.env` Auto-Connect:** Just run `ghostbase` in any project folder; it automatically picks up `DATABASE_URL` or standard database environment variables.
