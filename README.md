@@ -18,6 +18,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![UI: Textual](https://img.shields.io/badge/UI-Textual-bd93f9.svg)](https://github.com/Textualize/textual)
 
+<p align="center">
+  <img src="assets/ghostbase-main.svg" alt="GhostBase Terminal Studio" width="100%">
+</p>
+
 ---
 
 ## ⚡ Why GhostBase?
@@ -50,6 +54,11 @@ Opening **DBeaver** or **DataGrip** just to run a quick `SELECT`, inspect an ind
   - Instantly cleans up whitespace, capitalizes SQL keywords, and indents sub-clauses (`FROM`, `WHERE`, `AND`, `OR`, `JOIN`, `ORDER BY`).
 - ⚡ **1-Key Query Plan (`Ctrl + P`):**
   - Run instant execution plans (`EXPLAIN QUERY PLAN` / `EXPLAIN`) on any query to see index usage and bottlenecks.
+
+<p align="center">
+  <img src="assets/ghostbase-explain.svg" alt="GhostBase 1-Key EXPLAIN Query Plan" width="100%">
+</p>
+
 - 🔌 **Universal Database Support:** Connects natively to **SQLite**, **PostgreSQL**, and **MySQL**.
 - 🔍 **Zero-Config `.env` Auto-Connect:** Just run `ghostbase` in any project folder; it automatically picks up `DATABASE_URL` or standard database environment variables.
 - 🔎 **Real-time Table Search (`Ctrl + F`):** Type in the search bar to filter dozens of tables and views instantly.

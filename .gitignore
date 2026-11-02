@@ -6,7 +6,9 @@ __pycache__/
 *.sqlite3
 ghostbase_export.*
 export.*
-*.svg
+snap*.svg
+!assets/
+!assets/*.svg
 .env
 dist/
 build/
