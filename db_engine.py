@@ -65,20 +65,24 @@ class DatabaseEngine:
                 "Run:  pip install pymysql"
             )
         parsed = urllib.parse.urlparse(url)
+        # Use SSDictCursor (Server-Side streaming cursor) to protect client memory on massive queries
         self.conn = pymysql.connect(
             host=parsed.hostname or "localhost",
             port=parsed.port or 3306,
             user=parsed.username or "root",
             password=parsed.password or "",
             database=parsed.path.lstrip("/"),
-            cursorclass=pymysql.cursors.DictCursor,
+            cursorclass=pymysql.cursors.SSDictCursor,
             autocommit=True,
         )
 
-    def set_read_only(self, enabled: bool):
-        """Configure database engine session-level Read-Only mode."""
+    def set_read_only(self, enabled: bool) -> bool:
+        """
+        Configure database engine session-level Read-Only mode.
+        Returns True if successful. Raises RuntimeError if enabling fails (fail-closed).
+        """
         if not self.conn:
-            return
+            return False
         try:
             cur = self.conn.cursor()
             if self.db_type == "sqlite":
@@ -90,8 +94,11 @@ class DatabaseEngine:
             elif self.db_type == "mysql":
                 mode = "READ ONLY" if enabled else "READ WRITE"
                 cur.execute(f"SET SESSION TRANSACTION {mode};")
-        except Exception:
-            pass
+            return True
+        except Exception as e:
+            if enabled:
+                raise RuntimeError(f"Database engine failed to activate Read-Only mode: {e}")
+            return False
 
     def quote_table_name(self, table_name: str) -> str:
         """Properly quote table identifier for queries based on database engine."""
@@ -103,6 +110,9 @@ class DatabaseEngine:
                 return f'"{s}"."{t}"'
             return f'"{table_name}"'
         elif self.db_type == "mysql":
+            if "." in table_name:
+                s, t = table_name.split(".", 1)
+                return f"`{s}`.`{t}`"
             return f"`{table_name}`"
         else:  # sqlite
             return f"[{table_name}]"
@@ -347,10 +357,10 @@ class DatabaseEngine:
     def _mask_strings_and_literals(sql: str) -> Tuple[str, List[str]]:
         """
         Extract and mask all string literals and quoted identifiers:
-        - PostgreSQL dollar-quoted strings ($$ ... $$ or $tag$ ... $tag$)
-        - Standard single-quoted strings ('...')
-        - Standard double-quoted strings / identifiers ("...")
-        - MySQL backtick identifiers (`...`)
+        - PostgreSQL dollar-quoted strings with exact tag matching: $tag$ ... $tag$ (using backreference \2)
+        - Standard single-quoted strings: '...' (with '' escaping)
+        - Standard double-quoted strings / identifiers: "..."
+        - MySQL backtick identifiers: `...`
         """
         literals = []
         def _repl(m):
@@ -358,7 +368,13 @@ class DatabaseEngine:
             literals.append(m.group(0))
             return f" ___GB_LIT_{idx}___ "
 
-        pattern = r"(\$(?:[a-zA-Z_]\w*)?\$[\s\S]*?\$(?:[a-zA-Z_]\w*)?\$|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
+        # Matches:
+        # 1. Plain untagged dollar-quotes: $$...$$
+        # 2. Tagged dollar-quotes with strict matching backreference: $tag$...$tag$
+        # 3. Standard single-quoted strings: '...'
+        # 4. Standard double-quoted strings/identifiers: "..."
+        # 5. MySQL backticks: `...`
+        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
         masked = re.sub(pattern, _repl, sql)
         return masked, literals
 
@@ -367,7 +383,7 @@ class DatabaseEngine:
         Check query safety.
         - Strings and dollar-quotes are masked FIRST so inner text ('WHERE ...') does not bypass checks.
         - Comments (-- and /* */) are stripped second.
-        - In Safe Mode: Enforces strict Read-Only operations.
+        - In Safe Mode: Enforces strict Read-Only operations, blocking all DML, DDL, DO blocks, CALL, and SET configuration changes.
         - In Normal Mode: Intercepts unconstrained destructive queries.
         """
         # 1. Mask all string literals and dollar-quoted strings FIRST
@@ -400,10 +416,15 @@ class DatabaseEngine:
                 (r"\bNEXTVAL\s*\(", "NEXTVAL sequence advance"),
                 (r"\bINTO\s+OUTFILE\b", "INTO OUTFILE export"),
                 (r"\bINTO\s+DUMPFILE\b", "INTO DUMPFILE export"),
+                (r"\bSET\b", "SET configuration change"),
+                (r"\bRESET\b", "RESET configuration change"),
+                (r"\bDO\b", "DO procedural block"),
+                (r"\bCALL\b", "CALL stored procedure"),
+                (r"\bMERGE\b", "MERGE statement"),
             ]
             for pattern, desc in write_keywords:
                 if re.search(pattern, q_upper):
-                    return True, f"Safe Mode is active: write operations ({desc}) are strictly blocked"
+                    return True, f"Safe Mode is active: write or state-altering operations ({desc}) are strictly blocked"
 
             if re.search(r"\bPRAGMA\b\s+\w+\s*=", q_upper):
                 return True, "Safe Mode is active: PRAGMA configuration writes are blocked"
@@ -504,16 +525,27 @@ class DatabaseEngine:
 
     def execute_query(self, query: str, max_rows: int = 1000) -> Dict[str, Any]:
         start = time.perf_counter()
+        cur = None
         try:
             # Check if query is DML/DDL write operation (even if it has RETURNING)
             masked, _ = self._mask_strings_and_literals(query)
             clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
             clean_q = re.sub(r"--[^\r\n]*", " ", clean_q).strip().upper()
             is_write_dml = bool(
-                re.search(r"\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|DELETE\s+|REPLACE\s+INTO|CREATE\s+|DROP\s+|ALTER\s+|TRUNCATE\s+)\b", clean_q)
+                re.search(r"\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|DELETE\s+|REPLACE\s+INTO|CREATE\s+|DROP\s+|ALTER\s+|TRUNCATE\s+|DO\s+|CALL\s+|MERGE\s+)\b", clean_q)
             )
 
-            cur = self.conn.cursor()
+            # Use server-side streaming cursor for PostgreSQL read queries to prevent client RAM overflow
+            if self.db_type == "postgresql" and not is_write_dml:
+                stream_name = f"gb_stream_{int(time.perf_counter() * 1000000)}"
+                try:
+                    cur = self.conn.cursor(name=stream_name)
+                    cur.itersize = max_rows + 1
+                except Exception:
+                    cur = self.conn.cursor()
+            else:
+                cur = self.conn.cursor()
+
             cur.execute(query)
             elapsed_ms = (time.perf_counter() - start) * 1000
 
@@ -569,6 +601,12 @@ class DatabaseEngine:
                 "error": str(e),
                 "elapsed_ms": round(elapsed_ms, 2),
             }
+        finally:
+            if cur:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
 
     # --- Helpers ---
 

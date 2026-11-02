@@ -40,11 +40,14 @@ class Exporter:
         return deduped
 
     @staticmethod
-    def _escape_ident(ident: str) -> str:
+    def _escape_ident(ident: str, dialect: str = "sqlite") -> str:
         s = str(ident).strip()
+        q = "`" if str(dialect).lower() == "mysql" else '"'
+        escaped_q = q * 2
+
         if "." in s:
             parts = s.split(".")
-            return ".".join(f'"{p.replace(chr(34), chr(34)*2)}"' for p in parts)
+            return ".".join(f"{q}{p.replace(q, escaped_q)}{q}" for p in parts)
 
         reserved = {
             "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BETWEEN", "BY", "CASE",
@@ -59,8 +62,8 @@ class Exporter:
             "USER", "VALUES", "VIEW", "WHEN", "WHERE", "WITH"
         }
         if not s.isidentifier() or s.upper() in reserved:
-            escaped = s.replace('"', '""')
-            return f'"{escaped}"'
+            escaped = s.replace(q, escaped_q)
+            return f"{q}{escaped}{q}"
         return s
 
     @staticmethod
@@ -95,13 +98,13 @@ class Exporter:
                 f.write("| " + " | ".join(clean_cells) + " |\n")
 
     @staticmethod
-    def to_sql_inserts(table_name: str, columns: List[str], rows: List[List[Any]], output_path: str):
+    def to_sql_inserts(table_name: str, columns: List[str], rows: List[List[Any]], output_path: str, dialect: str = "sqlite"):
         table = (table_name or "exported_table").strip()
-        escaped_table = Exporter._escape_ident(table)
-        escaped_cols = [Exporter._escape_ident(c) for c in columns]
+        escaped_table = Exporter._escape_ident(table, dialect=dialect)
+        escaped_cols = [Exporter._escape_ident(c, dialect=dialect) for c in columns]
         cols_str = ", ".join(escaped_cols)
         with open(output_path, "w", encoding="utf-8") as f:
-            f.write(f"-- GhostBase SQL Export: {table}\n")
+            f.write(f"-- GhostBase SQL Export: {table} ({dialect})\n")
             f.write(f"-- Total: {len(rows)} row(s)\n\n")
             for r in rows:
                 vals = []

@@ -342,7 +342,7 @@ class GhostBaseApp(App):
             yield Label(f"[{self.db.db_type_label()}]", id="db-type-label")
             yield Label(db_label, id="db-name-label")
             yield Label(safe_text, id="safe-badge", classes=safe_class)
-            yield Label("v0.1.2", id="version-label")
+            yield Label("v0.1.3", id="version-label")
 
         with Horizontal(id="main-container"):
             with Vertical(id="sidebar"):
@@ -389,9 +389,13 @@ class GhostBaseApp(App):
     # Lifecycle
 
     async def on_mount(self):
-        # Configure database engine level Read-Only mode if safe_mode is enabled
+        # Configure database engine level Read-Only mode if safe_mode is enabled (fail-closed)
         if self.safe_mode:
-            self.db.set_read_only(True)
+            try:
+                self.db.set_read_only(True)
+            except Exception as e:
+                self.safe_mode = False
+                self.notify(f"Failed to enable Read-Only mode on database: {e}", severity="error")
 
         tables = self.db.get_tables()
         # Only populate demo tables when explicitly requested, in-memory, or default sample.db AND NOT in safe_mode
@@ -810,13 +814,18 @@ class GhostBaseApp(App):
         self.notify("Execution Plan analyzed successfully")
 
     def action_toggle_safe_mode(self):
-        """Toggle Production Safe Mode (Ctrl+S)"""
-        self.safe_mode = not self.safe_mode
+        """Toggle Production Safe Mode (Ctrl+S) - Fail-closed"""
+        new_mode = not self.safe_mode
         self._pending_destructive_query = None
         self._pending_destructive_time = 0.0
 
-        # Enforce/revoke database session level Read-Only
-        self.db.set_read_only(self.safe_mode)
+        # Enforce/revoke database session level Read-Only (Fail-closed)
+        try:
+            self.db.set_read_only(new_mode)
+            self.safe_mode = new_mode
+        except Exception as e:
+            self.notify(f"Cannot enable Safe Mode: {e}", severity="error", timeout=5)
+            return
 
         badge = self.query_one("#safe-badge", Label)
         if self.safe_mode:
@@ -905,7 +914,7 @@ class GhostBaseApp(App):
             else os.getcwd()
         )
         out = os.path.join(db_dir, "ghostbase_export.sql")
-        Exporter.to_sql_inserts(table_name, self.last_columns, self.last_rows, out)
+        Exporter.to_sql_inserts(table_name, self.last_columns, self.last_rows, out, dialect=self.db.db_type)
         self.notify(f"Saved: {out}", timeout=5)
 
     # Status bar

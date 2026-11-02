@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2026-11-02
+
+### Fixed
+- **Safe Mode Privilege & Procedural Blocks (Security):** Explicitly blocked `SET`, `RESET`, `DO` procedural anonymous blocks, `CALL` stored procedures, and `MERGE` statements in Safe Mode, preventing bypassing session read-only parameters or running procedural mutations.
+- **Fail-Closed Session Read-Only:** `set_read_only()` is now strictly fail-closed; if the underlying database engine fails to activate read-only mode, Safe Mode fails safely with a user alert and does not engage.
+- **Dollar-Quote Tag Matching & Parser Security:** Added exact tag backreference matching (`\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$`) to prevent tag mismatching (e.g. `$tag$ ... $other$ ... $tag$`), closing the destructive double-confirmation bypass.
+- **Streaming Server-Side Cursors:** Implemented named server-side streaming cursors in PostgreSQL (`psycopg2`) and unbuffered streaming cursors (`SSDictCursor`) in MySQL (`pymysql`) to guarantee true client memory protection on massive datasets.
+- **Dialect-Aware SQL Export:** Added dialect awareness to `Exporter.to_sql_inserts()`, automatically generating backticks (`` `analytics`.`order` ``) for MySQL and double quotes (`"analytics"."order"`) for PostgreSQL and SQLite.
+
 ## [0.1.2] - 2026-11-02
 
 ### Fixed

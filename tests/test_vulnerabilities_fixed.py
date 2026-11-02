@@ -41,6 +41,11 @@ def test_safe_mode_and_comment_bypass():
     is_dest, r = db.check_safety(dollar_bypass, is_safe_mode=False)
     assert is_dest, f"VULNERABILITY: Dollar-quoted string containing WHERE fooled check_safety: {r}"
 
+    # Postgres dollar-quoted string with tag mismatch ($tag$ vs $other$)
+    mismatched_tag_query = "UPDATE users SET role = $tag$abc $other$ WHERE marker $tag$;"
+    is_dest, r = db.check_safety(mismatched_tag_query, is_safe_mode=False)
+    assert is_dest, f"VULNERABILITY: Dollar-quoted tag mismatch bypassed WHERE check: {r}"
+
     # Safe Mode STRICT read-only checks
     safe_queries = [
         "SELECT * FROM users WHERE id = 5;",
@@ -52,6 +57,7 @@ def test_safe_mode_and_comment_bypass():
         is_dest, r = db.check_safety(q, is_safe_mode=True)
         assert not is_dest, f"Safe query wrongly blocked in Safe Mode: {q} ({r})"
 
+    # Safe Mode must strictly block DML, DDL, DO blocks, CALL, MERGE, and SET changes
     unsafe_queries = [
         ("UPDATE users SET role = 'Admin' WHERE id = 5;", "UPDATE"),
         ("INSERT INTO users (name) VALUES ('Test');", "INSERT"),
@@ -62,6 +68,11 @@ def test_safe_mode_and_comment_bypass():
         ("CREATE TABLE test (id INT);", "CREATE"),
         ("SELECT nextval('users_id_seq');", "NEXTVAL"),
         ("SELECT * INTO OUTFILE '/tmp/f' FROM users;", "INTO OUTFILE"),
+        ("SET default_transaction_read_only = OFF;", "SET"),
+        ("RESET ALL;", "RESET"),
+        ("DO $body$ BEGIN UPDATE users SET role = 'Admin'; END $body$;", "DO"),
+        ("CALL custom_proc();", "CALL"),
+        ("MERGE INTO target USING source ON target.id = source.id WHEN MATCHED THEN DELETE;", "MERGE"),
     ]
     for q, op in unsafe_queries:
         is_dest, r = db.check_safety(q, is_safe_mode=True)
@@ -72,7 +83,7 @@ def test_safe_mode_and_comment_bypass():
 
 
 def test_database_engine_level_readonly():
-    print("[*] 2. Testing Database Engine-Level Read-Only Enforcement...")
+    print("[*] 2. Testing Database Engine-Level Read-Only & Fail-Closed Enforcement...")
     db = DatabaseEngine(":memory:")
     db.conn.execute("CREATE TABLE read_only_test (id INT, val TEXT);")
     db.conn.commit()
@@ -180,11 +191,12 @@ def test_returning_dml_classification():
     print("  [+] DML with RETURNING Classification: PASS")
 
 
-def test_exporter_dedup_and_ident_escaping():
-    print("[*] 7. Testing Exporter JSON Types & SQL Identifier Escaping...")
+def test_exporter_json_types_and_dialect_sql():
+    print("[*] 7. Testing Exporter JSON Types & Dialect-Aware SQL Escaping (MySQL vs Postgres/SQLite)...")
     tmp = tempfile.gettempdir()
     json_path = os.path.join(tmp, "test_types.json")
-    sql_path = os.path.join(tmp, "test_escape.sql")
+    sql_pg_path = os.path.join(tmp, "test_pg.sql")
+    sql_my_path = os.path.join(tmp, "test_mysql.sql")
 
     # JSON export with Decimal, datetime, UUID, bytes, and duplicate column names
     cols = ["id", "id", "price", "created", "uid", "raw"]
@@ -206,17 +218,24 @@ def test_exporter_dedup_and_ident_escaping():
     assert data[0]["uid"] == "12345678-1234-5678-1234-567812345678"
     assert data[0]["raw"] == "binary_ghost"
 
-    # SQL export schema-qualified tables & reserved words
+    # PostgreSQL / SQLite dialect SQL export (Double quotes)
     table_name = "analytics.order"
     cols_special = ["first name", "group", "price"]
     rows_special = [["Bob", "Admin", decimal.Decimal("10.50")]]
-    Exporter.to_sql_inserts(table_name, cols_special, rows_special, sql_path)
-    with open(sql_path, "r", encoding="utf-8") as f:
-        sql_content = f.read()
+    Exporter.to_sql_inserts(table_name, cols_special, rows_special, sql_pg_path, dialect="postgresql")
+    with open(sql_pg_path, "r", encoding="utf-8") as f:
+        pg_content = f.read()
 
-    assert 'INSERT INTO "analytics"."order" ("first name", "group", price) VALUES (\'Bob\', \'Admin\', 10.50);' in sql_content
+    assert 'INSERT INTO "analytics"."order" ("first name", "group", price) VALUES (\'Bob\', \'Admin\', 10.50);' in pg_content
 
-    print("  [+] Exporter JSON Types & SQL Escaping: PASS")
+    # MySQL dialect SQL export (Backticks)
+    Exporter.to_sql_inserts(table_name, cols_special, rows_special, sql_my_path, dialect="mysql")
+    with open(sql_my_path, "r", encoding="utf-8") as f:
+        my_content = f.read()
+
+    assert 'INSERT INTO `analytics`.`order` (`first name`, `group`, price) VALUES (\'Bob\', \'Admin\', 10.50);' in my_content
+
+    print("  [+] Exporter JSON Types & Dialect-Aware SQL Escaping: PASS")
 
 
 def test_table_quoting_and_cte_export_detection():
@@ -232,6 +251,7 @@ def test_table_quoting_and_cte_export_detection():
     db_my = DatabaseEngine.__new__(DatabaseEngine)
     db_my.db_type = "mysql"
     assert db_my.quote_table_name("order") == "`order`"
+    assert db_my.quote_table_name("analytics.users") == "`analytics`.`users`"
 
     # CTE target detection test
     cte_query = """
@@ -266,7 +286,7 @@ def test_result_set_memory_limit():
 
 def main():
     print("\n" + "=" * 60)
-    print("RUNNING EXHAUSTIVE REFINED VERIFICATION TESTS (v0.1.2)")
+    print("RUNNING EXHAUSTIVE REFINED VERIFICATION TESTS (v0.1.3)")
     print("=" * 60)
 
     test_safe_mode_and_comment_bypass()
@@ -275,12 +295,12 @@ def main():
     test_sqlite_foreign_keys_enforced()
     test_empty_sqlite_not_polluted()
     test_returning_dml_classification()
-    test_exporter_dedup_and_ident_escaping()
+    test_exporter_json_types_and_dialect_sql()
     test_table_quoting_and_cte_export_detection()
     test_result_set_memory_limit()
 
     print("\n" + "=" * 60)
-    print("ALL 9 CRITICAL & HIGH EDGE CASES VERIFIED AND 100% PASSING!")
+    print("ALL ANALYST VULNERABILITIES VERIFIED AND 100% PASSING!")
     print("=" * 60 + "\n")
 
 
