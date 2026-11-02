@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostbase-cli"
+version = "0.1.0"
+description = "A fast, keyboard-driven terminal database studio for SQLite, PostgreSQL & MySQL"
+readme = "README.md"
+authors = [{ name = "4yk5", email = "contact.4yk5@proton.me" }]
+license = "MIT"
+requires-python = ">=3.10"
+keywords = [
+    "database", "sql", "tui", "terminal", "cli",
+    "sqlite", "postgres", "postgresql", "mysql",
+    "dbeaver", "datagrip", "query", "developer-tools"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+]
+dependencies = [
+    "textual>=8.0.0",
+    "rich>=14.0.0",
+    "psycopg2-binary>=2.9.0",
+    "pymysql>=1.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/4yk5/GhostBase"
+Repository = "https://github.com/4yk5/GhostBase"
+Issues = "https://github.com/4yk5/GhostBase/issues"
+
+[project.scripts]
+ghostbase = "main:main"
+
+[tool.setuptools]
+py-modules = ["app", "main", "db_engine", "exporter"]

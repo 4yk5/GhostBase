@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.db
+*.sqlite
+*.sqlite3
+ghostbase_export.*
+export.*
+*.svg
+.env
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/

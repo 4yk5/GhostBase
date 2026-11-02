@@ -1,0 +1,4 @@
+textual>=8.0.0
+rich>=14.0.0
+psycopg2-binary>=2.9.0
+pymysql>=1.1.0
