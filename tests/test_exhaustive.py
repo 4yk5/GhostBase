@@ -223,7 +223,7 @@ async def run_tui_async_tests():
         test_db_path = f.name
 
     try:
-        app = GhostBaseApp(db_path=test_db_path, read_only=False)
+        app = GhostBaseApp(db_path=test_db_path, read_only=False, populate_sample=True)
 
         async with app.run_test(size=(120, 36)) as pilot:
             await pilot.pause(0.2)

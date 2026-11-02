@@ -1,5 +1,6 @@
 import sys
 import os
+import urllib.parse
 
 
 def _load_env_file(path: str) -> dict:
@@ -61,7 +62,7 @@ def detect_connection(cli_arg: str = None) -> str:
 
     1. Command-line argument  (ghostbase mydb.sqlite | ghostbase postgresql://...)
     2. DATABASE_URL  in .env (current working directory)
-    3. DB_HOST + DB_NAME + DB_USER  in .env  → builds a PostgreSQL URL
+    3. DB_HOST + DB_NAME + DB_USER  in .env  -> builds a PostgreSQL URL (credentials URL-encoded)
     4. DATABASE_URL  environment variable
     5. Fallback: sample.db  (SQLite, inside GhostBase directory)
     """
@@ -82,7 +83,10 @@ def detect_connection(cli_arg: str = None) -> str:
     pwd  = env.get("DB_PASSWORD") or env.get("PGPASSWORD") or ""
 
     if host and name and user:
-        return f"postgresql://{user}:{pwd}@{host}:{port}/{name}"
+        safe_user = urllib.parse.quote_plus(user)
+        safe_pwd = urllib.parse.quote_plus(pwd) if pwd else ""
+        auth = f"{safe_user}:{safe_pwd}" if pwd else safe_user
+        return f"postgresql://{auth}@{host}:{port}/{name}"
 
     # 4. OS environment variable
     url = os.environ.get("DATABASE_URL")

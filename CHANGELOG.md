@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-11-02
+
+### Fixed
+- **Safe Mode Enforcement (Security):** Safe Mode now strictly enforces Read-Only queries, rejecting all DML (`INSERT`, `UPDATE`, `DELETE`) and DDL (`DROP`, `TRUNCATE`, `ALTER`, `CREATE`).
+- **Comment Injection & Safety Bypass (Security):** Stripped both C-style block comments (`/* ... */`) and line comments (`--`) before safety analysis so commented clauses like `/* WHERE */` cannot bypass destructive guards.
+- **PostgreSQL Autocommit & Transaction State:** Enabled connection autocommit on PostgreSQL (`psycopg2`), guaranteeing queries with `RETURNING` commit immediately and connections are not held in `IDLE in transaction`.
+- **SQLite Foreign Key Enforcement:** Enabled `PRAGMA foreign_keys = ON;` upon connection initialization.
+- **Confirmation State Timeout & Invalidation:** Added a 10-second expiration window and automatic state reset on text changes or editor clear.
+- **SQL Beautifier Literal Preservation:** Masked quoted literals and identifiers during beautification to prevent modifying strings or whitespace inside user data.
+- **Sidebar Performance & Row Count Caching:** Cached table row counts to eliminate redundant `SELECT COUNT(*)` queries on every search filter keystroke.
+- **Large Result Set Memory Protection:** Capped query result fetching to 1,000 rows in memory with user notification to prevent terminal UI freezing on massive datasets.
+- **Export Consistency & Escaping:** Cleared stale SELECT results on DML/error queries, auto-deduplicated duplicate JSON column names, and added identifier escaping for SQL exports.
+- **Empty SQLite Database Integrity:** Prevented automatically injecting sample demo tables into empty user-specified SQLite database files.
+- **Credential URL Encoding:** Safely encoded `.env` database usernames and passwords containing special characters (`@`, `#`, etc.).
+
 ## [0.1.0] - 2026-11-02
 
 ### Added

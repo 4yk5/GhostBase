@@ -1,5 +1,7 @@
 import sys
 import os
+import time
+import re
 
 if sys.platform == "win32":
     try:
@@ -138,164 +140,127 @@ ListItem.section-header {
 #schema-title {
     color: #f0883e;
     text-style: bold;
-    margin-bottom: 1;
 }
 #schema-content {
     color: #8b949e;
 }
 
-/* Query editor */
+/* Content Area */
 #content-area {
     width: 1fr;
-    padding: 0 1;
-}
-#query-box {
-    height: 7;
-    border: solid #30363d;
-    background: #010409;
-    margin-bottom: 0;
-}
-#query-box:focus {
-    border: solid #388bfd;
+    background: #0d1117;
 }
 
-/* Actions toolbar */
+/* Query Editor */
+#query-box {
+    height: 9;
+    background: #010409;
+    border-bottom: solid #30363d;
+    color: #e6edf3;
+}
+#query-box:focus {
+    border-bottom: solid #388bfd;
+}
+
+/* Toolbar */
 #toolbar {
     height: 3;
+    background: #161b22;
+    border-bottom: solid #30363d;
     align: left middle;
-    margin: 0;
-    overflow-x: hidden;
+    padding: 0 1;
+}
+#toolbar Button {
+    margin-right: 1;
+    min-width: 8;
+    height: 1;
+    border: none;
 }
 #btn-run {
     background: #238636;
     color: #ffffff;
-    border: none;
-    min-width: 6;
-    margin-right: 1;
 }
-#btn-run:hover { background: #2ea043; }
-
+#btn-run:hover {
+    background: #2ea043;
+}
 #btn-explain {
-    background: #388bfd;
-    color: #ffffff;
-    border: none;
-    min-width: 9;
-    margin-right: 1;
-}
-#btn-explain:hover { background: #58a6ff; }
-
-#btn-format {
     background: #1f6feb;
     color: #ffffff;
-    border: none;
-    min-width: 8;
-    margin-right: 1;
 }
-#btn-format:hover { background: #388bfd; }
-
+#btn-explain:hover {
+    background: #388bfd;
+}
+#btn-format {
+    background: #21262d;
+    color: #c9d1d9;
+}
+#btn-format:hover {
+    background: #30363d;
+}
 #btn-clear {
     background: #21262d;
     color: #8b949e;
-    border: none;
-    min-width: 7;
-    margin-right: 1;
 }
-#btn-clear:hover { background: #30363d; color: #c9d1d9; }
-
-#btn-safe {
+#btn-clear:hover {
     background: #30363d;
-    color: #c9d1d9;
-    border: none;
-    min-width: 6;
-    margin-right: 1;
+    color: #f85149;
 }
-#btn-safe:hover { background: #484f58; }
-
+#btn-safe {
+    background: #21262d;
+    color: #3fb950;
+}
+#btn-safe:hover {
+    background: #30363d;
+}
 #status-label {
+    margin-left: 2;
     color: #8b949e;
-    text-overflow: ellipsis;
-    overflow: hidden;
 }
 
-/* Results & export bar */
+/* Results Bar */
 #results-bar {
     height: 3;
+    background: #161b22;
+    border-bottom: solid #30363d;
     align: left middle;
     padding: 0 1;
-    background: #161b22;
-    border: solid #30363d;
-    border-bottom: none;
-    overflow-x: hidden;
 }
 #results-title {
-    color: #79c0ff;
+    color: #58a6ff;
     text-style: bold;
-    margin-right: 1;
 }
 #results-count {
-    color: #8b949e;
-    margin-right: 1;
+    color: #484f58;
+    margin-left: 1;
 }
 .export-sep {
     color: #30363d;
-    margin-right: 1;
+    margin: 0 1;
 }
 .export-label {
     color: #484f58;
     margin-right: 1;
 }
-#btn-csv {
-    background: #0d419d;
-    color: #79c0ff;
-    border: none;
-    min-width: 5;
+#results-bar Button {
     margin-right: 1;
-}
-#btn-csv:hover { background: #1158c7; }
-
-#btn-json {
-    background: #5a1e02;
-    color: #ffa657;
-    border: none;
     min-width: 6;
-    margin-right: 1;
-}
-#btn-json:hover { background: #7d2d00; }
-
-#btn-md {
-    background: #232a35;
-    color: #a5d6ff;
+    height: 1;
     border: none;
-    min-width: 4;
-    margin-right: 1;
+    background: #21262d;
+    color: #8b949e;
 }
-#btn-md:hover { background: #30363d; }
-
-#btn-sql {
-    background: #3b2300;
-    color: #ffc680;
-    border: none;
-    min-width: 5;
-    margin-right: 1;
+#results-bar Button:hover {
+    background: #30363d;
+    color: #c9d1d9;
 }
-#btn-sql:hover { background: #5a3500; }
 
-/* Results table */
+/* Data Table */
 #data-table {
     height: 1fr;
-    border: solid #30363d;
     background: #0d1117;
 }
-DataTable > .datatable--header {
-    background: #161b22;
-    color: #79c0ff;
-    text-style: bold;
-}
-DataTable > .datatable--cursor {
-    background: #1c2128;
-}
 
-/* Status bar */
+/* Status Bar */
 #status-bar {
     height: 1;
     dock: bottom;
@@ -344,18 +309,22 @@ class GhostBaseApp(App):
     selected_table: reactive[str] = reactive("")
     safe_mode: reactive[bool] = reactive(False)
 
-    def __init__(self, db_path: str = None, read_only: bool = False):
+    def __init__(self, db_path: str = None, read_only: bool = False, populate_sample: bool = False):
         super().__init__()
         self.db_path = db_path or "sample.db"
+        self.populate_sample = populate_sample
         self.db = DatabaseEngine(self.db_path)
         self.safe_mode = read_only
         self.last_columns: list = []
         self.last_rows:    list = []
+        self.last_query_table: str = None
         self.query_history: list = []
         self.history_index: int = -1
         self.all_tables: list = []
         self.all_views:  list = []
+        self._row_count_cache: dict = {}
         self._pending_destructive_query = None
+        self._pending_destructive_time = 0.0
 
     # Layout
 
@@ -373,7 +342,7 @@ class GhostBaseApp(App):
             yield Label(f"[{self.db.db_type_label()}]", id="db-type-label")
             yield Label(db_label, id="db-name-label")
             yield Label(safe_text, id="safe-badge", classes=safe_class)
-            yield Label("v0.1.0", id="version-label")
+            yield Label("v0.1.1", id="version-label")
 
         with Horizontal(id="main-container"):
             with Vertical(id="sidebar"):
@@ -421,12 +390,19 @@ class GhostBaseApp(App):
 
     async def on_mount(self):
         tables = self.db.get_tables()
-        if not tables and self.db.db_type == "sqlite":
+        # Only populate demo tables when explicitly requested, in-memory, or default sample.db
+        is_default_sample = (
+            self.populate_sample
+            or self.db_path == ":memory:"
+            or os.path.basename(os.path.abspath(self.db_path)) == "sample.db"
+        )
+        if not tables and self.db.db_type == "sqlite" and is_default_sample:
             self._create_sample_data()
             tables = self.db.get_tables()
 
         self.all_tables = tables
         self.all_views  = self.db.get_views()
+        self._refresh_row_counts()
         self._refresh_sidebar(self.all_tables, self.all_views)
 
         if self.all_tables:
@@ -437,8 +413,19 @@ class GhostBaseApp(App):
             )
             self.action_run_query()
             self._show_schema(first)
+        else:
+            self.query_one("#query-box", TextArea).text = (
+                "-- Connected to database.\n-- Write a query and press Ctrl+R to execute.\n"
+            )
 
         self._update_status_bar()
+
+    # Row count caching
+
+    def _refresh_row_counts(self):
+        self._row_count_cache = {}
+        for t in self.all_tables:
+            self._row_count_cache[t] = self.db.get_row_count(t)
 
     # Sample schema
 
@@ -500,7 +487,7 @@ class GhostBaseApp(App):
             lv.append(_sep_tables)
 
             for t in tables:
-                rc   = self.db.get_row_count(t)
+                rc   = self._row_count_cache.get(t, 0)
                 item = ListItem(Label(f"  {t}  ({rc})"))
                 item.table_name  = t    # type: ignore
                 item.is_view     = False  # type: ignore
@@ -532,6 +519,11 @@ class GhostBaseApp(App):
                 filtered_tables = [t for t in self.all_tables if q in t.lower()]
                 filtered_views  = [v for v in self.all_views if q in v.lower()]
             self._refresh_sidebar(filtered_tables, filtered_views)
+
+    def on_text_area_changed(self, event: TextArea.Changed):
+        if event.text_area.id == "query-box" and self._pending_destructive_query is not None:
+            self._pending_destructive_query = None
+            self._pending_destructive_time = 0.0
 
     # Schema panel
 
@@ -591,6 +583,9 @@ class GhostBaseApp(App):
             return
         is_view = getattr(item, "is_view", False)
         self.selected_table = t
+        self._pending_destructive_query = None
+        self._pending_destructive_time = 0.0
+
         self.query_one("#query-box", TextArea).text = (
             f"SELECT * FROM {t} LIMIT 50;"
         )
@@ -626,26 +621,32 @@ class GhostBaseApp(App):
         status = self.query_one("#status-label", Label)
         res_cnt = self.query_one("#results-count", Label)
 
-        # Safety guard check
-        is_destructive, reason = self.db.check_safety(query)
+        # Safety guard check (strict read-only in safe mode, destructive guard in normal mode)
+        is_destructive, reason = self.db.check_safety(query, is_safe_mode=self.safe_mode)
         if is_destructive:
             if self.safe_mode:
                 self.notify(f"BLOCKED BY SAFE MODE: {reason}", severity="error", timeout=5)
                 status.update(f"[bold red]BLOCKED BY SAFE MODE:[/] {reason}")
                 return
 
-            if self._pending_destructive_query != query:
+            now = time.time()
+            if self._pending_destructive_query == query and (now - self._pending_destructive_time) <= 10.0:
+                # Double confirmation received within 10s window
+                self._pending_destructive_query = None
+                self._pending_destructive_time = 0.0
+            else:
                 self._pending_destructive_query = query
+                self._pending_destructive_time = now
                 self.notify(
-                    f"DANGER: {reason}!\nPress Ctrl+R again to confirm.",
+                    f"DANGER: {reason}!\nPress Ctrl+R within 10s to confirm.",
                     severity="warning",
                     timeout=5,
                 )
                 status.update(f"[bold red]DANGER:[/] {reason} -> Press Ctrl+R to CONFIRM")
                 return
-
-            # Double confirmation received
+        else:
             self._pending_destructive_query = None
+            self._pending_destructive_time = 0.0
 
         if not self.query_history or self.query_history[-1] != query:
             self.query_history.append(query)
@@ -658,6 +659,10 @@ class GhostBaseApp(App):
         dt.clear(columns=True)
 
         if not res["success"]:
+            # Clear export cache on error
+            self.last_columns = []
+            self.last_rows    = []
+            self.last_query_table = None
             err = res.get("error", "Unknown error")
             status.update(f"[bold red]ERROR[/] {err}")
             res_cnt.update("(Error)")
@@ -667,6 +672,11 @@ class GhostBaseApp(App):
         if res["is_select"]:
             self.last_columns = res["columns"]
             self.last_rows    = res["rows"]
+
+            # Detect target table for export if simple SELECT FROM table
+            m = re.search(r"\bFROM\s+[`\"\[]?([a-zA-Z0-9_\.]+)[`\"\]]?", query, flags=re.IGNORECASE)
+            self.last_query_table = m.group(1).split(".")[-1] if m else (self.selected_table or "query_result")
+
             dt.add_columns(*self.last_columns)
             for row in self.last_rows:
                 styled = []
@@ -685,16 +695,29 @@ class GhostBaseApp(App):
             rc = res["row_count"]
             ms = res["elapsed_ms"]
             status.update(f"[bold green]OK[/] ({ms}ms)")
-            res_cnt.update(f"({rc} rows)")
+
+            if res.get("truncated"):
+                res_cnt.update(f"({rc}+ rows, capped at 1,000)")
+                self.notify("Displaying first 1,000 rows (use LIMIT / OFFSET for more)", severity="information", timeout=4)
+            else:
+                res_cnt.update(f"({rc} rows)")
+
             self._update_status_bar(row_count=rc, ms=ms)
         else:
+            # Clear export cache so previous SELECT results are not mistakenly exported
+            self.last_columns = []
+            self.last_rows    = []
+            self.last_query_table = None
+
             aff = res.get("affected_rows", 0)
             ms  = res["elapsed_ms"]
             status.update(f"[bold green]OK[/] ({ms}ms)")
             res_cnt.update(f"({aff} rows affected)")
             self.notify(f"Done — {aff} row(s) affected")
+
             self.all_tables = self.db.get_tables()
             self.all_views  = self.db.get_views()
+            self._refresh_row_counts()
             self._refresh_sidebar(self.all_tables, self.all_views)
             self._update_status_bar(ms=ms)
 
@@ -745,21 +768,26 @@ class GhostBaseApp(App):
     def action_toggle_safe_mode(self):
         """Toggle Production Safe Mode (Ctrl+S)"""
         self.safe_mode = not self.safe_mode
+        self._pending_destructive_query = None
+        self._pending_destructive_time = 0.0
+
         badge = self.query_one("#safe-badge", Label)
         if self.safe_mode:
             badge.update("[SAFE: ON]")
             badge.remove_class("unsafe")
-            self.notify("Safe Mode ENABLED: Destructive queries blocked", timeout=3)
+            self.notify("Safe Mode ENABLED: Modifications strictly blocked (Read-Only)", timeout=3)
         else:
             badge.update("[SAFE: OFF]")
             badge.add_class("unsafe")
-            self.notify("Safe Mode DISABLED: Destructive queries allowed with confirmation", severity="warning", timeout=3)
+            self.notify("Safe Mode DISABLED: Destructive queries require confirmation", severity="warning", timeout=3)
         self._update_status_bar()
 
     def action_focus_filter(self):
         self.query_one("#table-search", Input).focus()
 
     def action_clear_query(self):
+        self._pending_destructive_query = None
+        self._pending_destructive_time = 0.0
         self.query_one("#query-box", TextArea).text = ""
         self.query_one("#status-label", Label).update("Ready")
         self.query_one("#query-box", TextArea).focus()
@@ -782,7 +810,7 @@ class GhostBaseApp(App):
 
     def action_export_csv(self):
         if not self.last_columns:
-            self.notify("Run a query first", severity="warning")
+            self.notify("Run a SELECT query first", severity="warning")
             return
         db_dir = (
             os.path.dirname(os.path.abspath(self.db_path))
@@ -795,7 +823,7 @@ class GhostBaseApp(App):
 
     def action_export_json(self):
         if not self.last_columns:
-            self.notify("Run a query first", severity="warning")
+            self.notify("Run a SELECT query first", severity="warning")
             return
         db_dir = (
             os.path.dirname(os.path.abspath(self.db_path))
@@ -808,7 +836,7 @@ class GhostBaseApp(App):
 
     def action_export_markdown(self):
         if not self.last_columns:
-            self.notify("Run a query first", severity="warning")
+            self.notify("Run a SELECT query first", severity="warning")
             return
         db_dir = (
             os.path.dirname(os.path.abspath(self.db_path))
@@ -821,9 +849,9 @@ class GhostBaseApp(App):
 
     def action_export_sql(self):
         if not self.last_columns:
-            self.notify("Run a query first", severity="warning")
+            self.notify("Run a SELECT query first", severity="warning")
             return
-        table_name = self.selected_table or "exported_table"
+        table_name = getattr(self, "last_query_table", None) or self.selected_table or "exported_table"
         db_dir = (
             os.path.dirname(os.path.abspath(self.db_path))
             if (self.db.db_type == "sqlite" and self.db_path != ":memory:")

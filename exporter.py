@@ -5,6 +5,40 @@ from typing import List, Any
 
 class Exporter:
     @staticmethod
+    def _dedup_columns(columns: List[str]) -> List[str]:
+        seen = {}
+        deduped = []
+        for c in columns:
+            col_str = str(c)
+            if col_str in seen:
+                seen[col_str] += 1
+                deduped.append(f"{col_str}_{seen[col_str]}")
+            else:
+                seen[col_str] = 1
+                deduped.append(col_str)
+        return deduped
+
+    @staticmethod
+    def _escape_ident(ident: str) -> str:
+        s = str(ident).strip()
+        reserved = {
+            "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "BETWEEN", "BY", "CASE",
+            "CHECK", "COLUMN", "CONSTRAINT", "CREATE", "CROSS", "CURRENT_DATE",
+            "CURRENT_TIME", "CURRENT_TIMESTAMP", "DEFAULT", "DELETE", "DESC",
+            "DISTINCT", "DROP", "ELSE", "END", "EXISTS", "FALSE", "FOR",
+            "FOREIGN", "FROM", "FULL", "GROUP", "HAVING", "IN", "INDEX",
+            "INNER", "INSERT", "INTERSECT", "INTO", "IS", "JOIN", "KEY",
+            "LEFT", "LIKE", "LIMIT", "NOT", "NULL", "ON", "OR", "ORDER",
+            "OUTER", "PRIMARY", "REFERENCES", "RIGHT", "SELECT", "SET",
+            "TABLE", "THEN", "TO", "TRUE", "UNION", "UNIQUE", "UPDATE",
+            "USER", "VALUES", "VIEW", "WHEN", "WHERE", "WITH"
+        }
+        if not s.isidentifier() or s.upper() in reserved:
+            escaped = s.replace('"', '""')
+            return f'"{escaped}"'
+        return s
+
+    @staticmethod
     def to_csv(columns: List[str], rows: List[List[Any]], output_path: str):
         with open(output_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
@@ -13,9 +47,10 @@ class Exporter:
 
     @staticmethod
     def to_json(columns: List[str], rows: List[List[Any]], output_path: str):
+        clean_cols = Exporter._dedup_columns(columns)
         data = []
         for r in rows:
-            data.append(dict(zip(columns, r)))
+            data.append(dict(zip(clean_cols, r)))
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -36,8 +71,10 @@ class Exporter:
 
     @staticmethod
     def to_sql_inserts(table_name: str, columns: List[str], rows: List[List[Any]], output_path: str):
-        table = table_name or "exported_table"
-        cols_str = ", ".join(columns)
+        table = (table_name or "exported_table").strip()
+        escaped_table = Exporter._escape_ident(table)
+        escaped_cols = [Exporter._escape_ident(c) for c in columns]
+        cols_str = ", ".join(escaped_cols)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(f"-- GhostBase SQL Export: {table}\n")
             f.write(f"-- Total: {len(rows)} row(s)\n\n")
@@ -46,10 +83,12 @@ class Exporter:
                 for v in r:
                     if v is None:
                         vals.append("NULL")
+                    elif isinstance(v, bool):
+                        vals.append("TRUE" if v else "FALSE")
                     elif isinstance(v, (int, float)):
                         vals.append(str(v))
                     else:
                         escaped = str(v).replace("'", "''")
                         vals.append(f"'{escaped}'")
                 vals_str = ", ".join(vals)
-                f.write(f"INSERT INTO {table} ({cols_str}) VALUES ({vals_str});\n")
+                f.write(f"INSERT INTO {escaped_table} ({cols_str}) VALUES ({vals_str});\n")
