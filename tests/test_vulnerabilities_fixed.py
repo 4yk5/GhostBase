@@ -46,6 +46,16 @@ def test_safe_mode_and_comment_bypass():
     is_dest, r = db.check_safety(mismatched_tag_query, is_safe_mode=False)
     assert is_dest, f"VULNERABILITY: Dollar-quoted tag mismatch bypassed WHERE check: {r}"
 
+    # Postgres E'...' string with backslash escaped quote
+    e_string_query = "UPDATE users SET role = E'foo\\' WHERE false';"
+    is_dest, r = db.check_safety(e_string_query, is_safe_mode=False)
+    assert is_dest, f"VULNERABILITY: PostgreSQL E-string with escaped quote bypassed WHERE check: {r}"
+
+    # MySQL # comment bypass attempt
+    mysql_comment_query = "UPDATE users SET role = 'Member' # WHERE id = 1\n;"
+    is_dest, r = db.check_safety(mysql_comment_query, is_safe_mode=False)
+    assert is_dest, f"VULNERABILITY: MySQL # comment containing WHERE fooled check_safety: {r}"
+
     # Safe Mode STRICT read-only checks
     safe_queries = [
         "SELECT * FROM users WHERE id = 5;",
@@ -57,7 +67,7 @@ def test_safe_mode_and_comment_bypass():
         is_dest, r = db.check_safety(q, is_safe_mode=True)
         assert not is_dest, f"Safe query wrongly blocked in Safe Mode: {q} ({r})"
 
-    # Safe Mode must strictly block DML, DDL, DO blocks, CALL, MERGE, and SET changes
+    # Safe Mode must strictly block DML, DDL, DO blocks, CALL, MERGE, SET, and state-modifying functions
     unsafe_queries = [
         ("UPDATE users SET role = 'Admin' WHERE id = 5;", "UPDATE"),
         ("INSERT INTO users (name) VALUES ('Test');", "INSERT"),
@@ -67,6 +77,9 @@ def test_safe_mode_and_comment_bypass():
         ("ALTER TABLE users ADD COLUMN age INT;", "ALTER"),
         ("CREATE TABLE test (id INT);", "CREATE"),
         ("SELECT nextval('users_id_seq');", "NEXTVAL"),
+        ("SELECT setval('users_id_seq', 1, false);", "SETVAL"),
+        ("SELECT set_config('default_transaction_read_only', 'off', false);", "SET_CONFIG"),
+        ("SELECT pg_terminate_backend(1234);", "PG_TERMINATE_BACKEND"),
         ("SELECT * INTO OUTFILE '/tmp/f' FROM users;", "INTO OUTFILE"),
         ("SET default_transaction_read_only = OFF;", "SET"),
         ("RESET ALL;", "RESET"),
@@ -156,22 +169,27 @@ def test_sqlite_foreign_keys_enforced():
 
 
 def test_empty_sqlite_not_polluted():
-    print("[*] 5. Testing Empty SQLite Database Guard in Read-Only Mode...")
+    print("[*] 5. Testing Empty SQLite Database Guard in Read-Only Mode (with actual on_mount)...")
+    import asyncio
     from app import GhostBaseApp
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         empty_db_path = f.name
 
-    try:
-        # Launch in read-only / safe mode
+    async def _run():
         app = GhostBaseApp(db_path=empty_db_path, read_only=True, populate_sample=True)
-        tables = app.db.get_tables()
-        assert len(tables) == 0, f"VULNERABILITY: Sample tables were created during --read-only launch: {tables}"
-        app.db.close()
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            tables = app.db.get_tables()
+            assert len(tables) == 0, f"VULNERABILITY: Sample tables were created during --read-only launch: {tables}"
+            assert app.safe_mode is True
+
+    try:
+        asyncio.run(_run())
     finally:
         if os.path.exists(empty_db_path):
             os.remove(empty_db_path)
 
-    print("  [+] Empty Database Integrity in Read-Only: PASS")
+    print("  [+] Empty Database Integrity in Read-Only (on_mount verified): PASS")
 
 
 def test_returning_dml_classification():

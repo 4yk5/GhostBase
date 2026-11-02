@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] - 2026-11-02
+
+### Fixed
+- **Safe Mode Function Hardening (Security):** Explicitly blocked `set_config()`, `setval()`, `nextval()`, `currval()`, `lastval()`, `pg_terminate_backend()`, `pg_cancel_backend()`, `lo_import()`, and `lo_export()` in Safe Mode, closing configuration and sequence manipulation vectors.
+- **Fail-Closed Startup Guarantee (Security):** When launched with `--read-only`, failure to enforce database-level read-only immediately terminates the process with an error code to guarantee database immutability.
+- **PostgreSQL E-String & Escape Literal Masking:** Enhanced tokenizer to match PostgreSQL `E'...'` backslash-escaped strings (`E'(?:\\.|''|[^'\\])*'`), ensuring escaped quotes (`\'`) do not leak unconstrained `WHERE` strings.
+- **MySQL `#` Comment Stripping:** Included MySQL single-line `#` comments in comment sanitization, preventing `# WHERE` from bypassing normal-mode double confirmation.
+- **True PostgreSQL Server-Side Streaming:** Resolved named cursor autocommit conflict in `psycopg2` by explicitly scoping named cursor read transactions with instant commits, preventing client memory buffering on massive SELECTs.
+- **MySQL Socket Drain Protection:** Automatically appended `LIMIT 1001` on unconstrained MySQL SELECT queries to eliminate unnecessary network socket draining in `SSDictCursor`.
+
 ## [0.1.3] - 2026-11-02
 
 ### Fixed

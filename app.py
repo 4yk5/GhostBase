@@ -342,7 +342,7 @@ class GhostBaseApp(App):
             yield Label(f"[{self.db.db_type_label()}]", id="db-type-label")
             yield Label(db_label, id="db-name-label")
             yield Label(safe_text, id="safe-badge", classes=safe_class)
-            yield Label("v0.1.3", id="version-label")
+            yield Label("v0.1.4", id="version-label")
 
         with Horizontal(id="main-container"):
             with Vertical(id="sidebar"):
@@ -389,13 +389,14 @@ class GhostBaseApp(App):
     # Lifecycle
 
     async def on_mount(self):
-        # Configure database engine level Read-Only mode if safe_mode is enabled (fail-closed)
+        # Configure database engine level Read-Only mode if safe_mode is enabled (strictly fail-closed)
         if self.safe_mode:
             try:
                 self.db.set_read_only(True)
             except Exception as e:
-                self.safe_mode = False
-                self.notify(f"Failed to enable Read-Only mode on database: {e}", severity="error")
+                self.notify(f"Security Alert: Failed to enforce Read-Only mode on database: {e}", severity="error")
+                self.exit(return_code=1)
+                return
 
         tables = self.db.get_tables()
         # Only populate demo tables when explicitly requested, in-memory, or default sample.db AND NOT in safe_mode

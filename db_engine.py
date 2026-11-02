@@ -52,7 +52,7 @@ class DatabaseEngine:
                 "Run:  pip install psycopg2-binary"
             )
         self.conn = psycopg2.connect(url)
-        # Enable autocommit so transactions are not left IDLE and RETURNING queries commit immediately
+        # Enable autocommit so write transactions are not left IDLE and RETURNING queries commit immediately
         self.conn.autocommit = True
 
     def _connect_mysql(self, url: str):
@@ -357,8 +357,10 @@ class DatabaseEngine:
     def _mask_strings_and_literals(sql: str) -> Tuple[str, List[str]]:
         """
         Extract and mask all string literals and quoted identifiers:
-        - PostgreSQL dollar-quoted strings with exact tag matching: $tag$ ... $tag$ (using backreference \2)
-        - Standard single-quoted strings: '...' (with '' escaping)
+        - Plain untagged dollar-quotes: $$...$$
+        - Tagged dollar-quotes with strict matching backreference \2: $tag$...$tag$
+        - PostgreSQL E-strings: E'...' (supporting backslash escapes \')
+        - Standard single-quoted strings: '...' (supporting \' and '')
         - Standard double-quoted strings / identifiers: "..."
         - MySQL backtick identifiers: `...`
         """
@@ -368,13 +370,7 @@ class DatabaseEngine:
             literals.append(m.group(0))
             return f" ___GB_LIT_{idx}___ "
 
-        # Matches:
-        # 1. Plain untagged dollar-quotes: $$...$$
-        # 2. Tagged dollar-quotes with strict matching backreference: $tag$...$tag$
-        # 3. Standard single-quoted strings: '...'
-        # 4. Standard double-quoted strings/identifiers: "..."
-        # 5. MySQL backticks: `...`
-        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`)"
+        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|E'(?:\\.|''|[^'\\])*'|'(?:\\.|''|[^'\\])*'|\"(?:\\.|\"\"|[^\"])*\"|`(?:``|[^`])*`)"
         masked = re.sub(pattern, _repl, sql)
         return masked, literals
 
@@ -382,16 +378,17 @@ class DatabaseEngine:
         """
         Check query safety.
         - Strings and dollar-quotes are masked FIRST so inner text ('WHERE ...') does not bypass checks.
-        - Comments (-- and /* */) are stripped second.
-        - In Safe Mode: Enforces strict Read-Only operations, blocking all DML, DDL, DO blocks, CALL, and SET configuration changes.
+        - Comments (-- , /* */, and MySQL #) are stripped second.
+        - In Safe Mode: Enforces strict Read-Only operations, blocking all DML, DDL, DO blocks, CALL, MERGE, SET, and state-modifying functions.
         - In Normal Mode: Intercepts unconstrained destructive queries.
         """
         # 1. Mask all string literals and dollar-quoted strings FIRST
         masked, _ = self._mask_strings_and_literals(query)
 
-        # 2. Strip block comments /* ... */ and line comments -- ...
+        # 2. Strip block comments /* ... */, line comments -- ..., and MySQL # ...
         q_no_comments = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
         q_no_comments = re.sub(r"--[^\r\n]*", " ", q_no_comments)
+        q_no_comments = re.sub(r"#[^\r\n]*", " ", q_no_comments)
 
         q_clean = q_no_comments.strip()
         if not q_clean:
@@ -413,14 +410,23 @@ class DatabaseEngine:
                 (r"\bGRANT\b", "GRANT statement"),
                 (r"\bREVOKE\b", "REVOKE statement"),
                 (r"\bVACUUM\b", "VACUUM statement"),
-                (r"\bNEXTVAL\s*\(", "NEXTVAL sequence advance"),
-                (r"\bINTO\s+OUTFILE\b", "INTO OUTFILE export"),
-                (r"\bINTO\s+DUMPFILE\b", "INTO DUMPFILE export"),
                 (r"\bSET\b", "SET configuration change"),
                 (r"\bRESET\b", "RESET configuration change"),
                 (r"\bDO\b", "DO procedural block"),
                 (r"\bCALL\b", "CALL stored procedure"),
                 (r"\bMERGE\b", "MERGE statement"),
+                (r"\bSET_CONFIG\s*\(", "SET_CONFIG parameter modification"),
+                (r"\bSETVAL\s*\(", "SETVAL sequence mutation"),
+                (r"\bNEXTVAL\s*\(", "NEXTVAL sequence advance"),
+                (r"\bCURRVAL\s*\(", "CURRVAL sequence check"),
+                (r"\bLASTVAL\s*\(", "LASTVAL sequence check"),
+                (r"\bPG_TERMINATE_BACKEND\b", "PG_TERMINATE_BACKEND admin call"),
+                (r"\bPG_CANCEL_BACKEND\b", "PG_CANCEL_BACKEND admin call"),
+                (r"\bLO_IMPORT\b", "LO_IMPORT filesystem read"),
+                (r"\bLO_EXPORT\b", "LO_EXPORT filesystem write"),
+                (r"\bDBLINK\b", "DBLINK external query execution"),
+                (r"\bINTO\s+OUTFILE\b", "INTO OUTFILE export"),
+                (r"\bINTO\s+DUMPFILE\b", "INTO DUMPFILE export"),
             ]
             for pattern, desc in write_keywords:
                 if re.search(pattern, q_upper):
@@ -448,7 +454,8 @@ class DatabaseEngine:
     def explain_query(self, query: str) -> Dict[str, Any]:
         masked, literals = self._mask_strings_and_literals(query)
         clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
-        clean_q = re.sub(r"--[^\r\n]*", " ", clean_q).strip().rstrip(";")
+        clean_q = re.sub(r"--[^\r\n]*", " ", clean_q)
+        clean_q = re.sub(r"#[^\r\n]*", " ", clean_q).strip().rstrip(";")
         for idx, orig in enumerate(literals):
             clean_q = clean_q.replace(f"___GB_LIT_{idx}___", orig)
 
@@ -474,7 +481,7 @@ class DatabaseEngine:
         sql_lines = []
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith("--"):
+            if stripped.startswith(("--", "#")):
                 comment_lines.append(stripped)
             else:
                 sql_lines.append(line)
@@ -530,23 +537,58 @@ class DatabaseEngine:
             # Check if query is DML/DDL write operation (even if it has RETURNING)
             masked, _ = self._mask_strings_and_literals(query)
             clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
-            clean_q = re.sub(r"--[^\r\n]*", " ", clean_q).strip().upper()
+            clean_q = re.sub(r"--[^\r\n]*", " ", clean_q)
+            clean_q = re.sub(r"#[^\r\n]*", " ", clean_q).strip().upper()
             is_write_dml = bool(
                 re.search(r"\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|DELETE\s+|REPLACE\s+INTO|CREATE\s+|DROP\s+|ALTER\s+|TRUNCATE\s+|DO\s+|CALL\s+|MERGE\s+)\b", clean_q)
             )
 
-            # Use server-side streaming cursor for PostgreSQL read queries to prevent client RAM overflow
+            # PostgreSQL streaming: Use server-side named cursor to prevent pulling entire table into client RAM
             if self.db_type == "postgresql" and not is_write_dml:
                 stream_name = f"gb_stream_{int(time.perf_counter() * 1000000)}"
+                # Disable autocommit temporarily for named cursor creation in psycopg2
+                self.conn.autocommit = False
                 try:
                     cur = self.conn.cursor(name=stream_name)
                     cur.itersize = max_rows + 1
-                except Exception:
-                    cur = self.conn.cursor()
-            else:
-                cur = self.conn.cursor()
+                    cur.execute(query)
+                    if cur.description:
+                        columns = [d[0] for d in cur.description]
+                        raw = cur.fetchmany(max_rows + 1)
+                        truncated = len(raw) > max_rows
+                        display_rows = raw[:max_rows]
+                        rows = [list(r.values()) if isinstance(r, dict) else list(r) for r in display_rows]
+                        cur.close()
+                        self.conn.commit()  # Cleanly close read transaction without leaving idle connection
+                        elapsed_ms = (time.perf_counter() - start) * 1000
+                        return {
+                            "success": True,
+                            "columns": columns,
+                            "rows": rows,
+                            "row_count": len(rows),
+                            "affected_rows": 0,
+                            "truncated": truncated,
+                            "elapsed_ms": round(elapsed_ms, 2),
+                            "is_select": True,
+                            "is_returning": False,
+                        }
+                except Exception as e:
+                    try:
+                        self.conn.rollback()
+                    except Exception:
+                        pass
+                    raise e
+                finally:
+                    self.conn.autocommit = True
 
-            cur.execute(query)
+            # MySQL optimization: Auto-apply LIMIT on SELECTs without LIMIT to prevent server unbuffered socket drain
+            exec_query = query
+            if self.db_type == "mysql" and not is_write_dml:
+                if not re.search(r"\bLIMIT\b", clean_q, flags=re.IGNORECASE):
+                    exec_query = query.rstrip().rstrip(";") + f" LIMIT {max_rows + 1};"
+
+            cur = self.conn.cursor()
+            cur.execute(exec_query)
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             if cur.description:
