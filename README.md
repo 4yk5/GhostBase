@@ -7,7 +7,7 @@
                                                  
 ```
 
-# GhostBase 👻🗄️
+# GhostBase 👻
 
 > **A fast, keyboard-driven terminal database studio for SQLite, PostgreSQL, and MySQL.**  
 > *No Java runtimes. No 1.5GB RAM bloat. Built-in production safety guard, instant SQL beautifier & zero-config `.env` connect.*
@@ -54,13 +54,11 @@ Opening **DBeaver** or **DataGrip** just to run a quick `SELECT`, inspect an ind
   - Instantly cleans up whitespace, capitalizes SQL keywords, and indents sub-clauses (`FROM`, `WHERE`, `AND`, `OR`, `JOIN`, `ORDER BY`).
 - ⚡ **1-Key Query Plan (`Ctrl + P`):**
   - Run instant execution plans (`EXPLAIN QUERY PLAN` / `EXPLAIN`) on any query to see index usage and bottlenecks.
-
-
 - 🔌 **Universal Database Support:** Connects natively to **SQLite**, **PostgreSQL**, and **MySQL**.
-- 🔍 **Zero-Config `.env` Auto-Connect:** Just run `ghostbase` in any project folder; it automatically picks up `DATABASE_URL` or standard database environment variables.
-- 🔎 **Real-time Table Search (`Ctrl + F`):** Type in the search bar to filter dozens of tables and views instantly.
+- 🔑 **Zero-Config `.env` Auto-Connect:** Just run `ghostbase` in any project folder; it automatically picks up `DATABASE_URL` or standard database environment variables.
+- 🔍 **Real-time Table Search (`Ctrl + F`):** Type in the search bar to filter dozens of tables and views instantly.
 - 📊 **Explorer with Tables & Views:** Browse tables and views with live row counts.
-- 📐 **Instant Schema & Foreign Keys:** See primary keys, column types, nullability, and foreign key references at a glance.
+- 📋 **Instant Schema & Foreign Keys:** See primary keys, column types, nullability, and foreign key references at a glance.
 - 💾 **Multi-Format Exports:** Instant SQL `INSERT`s (`Ctrl + I`), Markdown (`Ctrl + M`), CSV (`Ctrl + E`), and JSON (`Ctrl + J`).
 - 📜 **Query History:** Cycle through your last 20 queries with `Ctrl + ↑` and `Ctrl + ↓`.
 - 🎨 **Clean Cyberpunk Aesthetic:** Fast, high-contrast, zero-flicker terminal interface.
@@ -135,10 +133,9 @@ ghostbase postgresql://prod-db:5432/main --read-only
 
 ---
 
-## 📬 Contact & Inquiries
+## 🤝 Contributing
 
-For partnerships, feature requests, or business inquiries:  
-📧 **[contact.4yk5@proton.me](mailto:contact.4yk5@proton.me)**
+Contributions, feedback, and pull requests are very welcome! Feel free to open an issue for bug reports or feature requests.
 
 ---
 
