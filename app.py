@@ -314,7 +314,8 @@ class GhostBaseApp(App):
         self.db_path = db_path or "sample.db"
         self.populate_sample = populate_sample
         self.db = DatabaseEngine(self.db_path)
-        self.safe_mode = read_only
+        self._cli_read_only = bool(read_only)
+        self.safe_mode = bool(read_only)
         self.last_columns: list = []
         self.last_rows:    list = []
         self.last_query_table: str = None
@@ -334,15 +335,19 @@ class GhostBaseApp(App):
             if self.db.db_type != "sqlite"
             else os.path.basename(self.db_path)
         )
-        safe_text = "[SAFE: ON]" if self.safe_mode else "[SAFE: OFF]"
-        safe_class = "" if self.safe_mode else "unsafe"
+        if self._cli_read_only:
+            safe_text = "[SAFE: LOCKED]"
+            safe_class = ""
+        else:
+            safe_text = "[SAFE: ON]" if self.safe_mode else "[SAFE: OFF]"
+            safe_class = "" if self.safe_mode else "unsafe"
 
         with Horizontal(id="header-bar"):
             yield Label("GHOSTBASE", id="title-label")
             yield Label(f"[{self.db.db_type_label()}]", id="db-type-label")
             yield Label(db_label, id="db-name-label")
             yield Label(safe_text, id="safe-badge", classes=safe_class)
-            yield Label("v0.1.4", id="version-label")
+            yield Label("v0.1.5", id="version-label")
 
         with Horizontal(id="main-container"):
             with Vertical(id="sidebar"):
@@ -781,7 +786,7 @@ class GhostBaseApp(App):
     def action_explain_query(self):
         """Execute 1-Key EXPLAIN Query Plan (Ctrl+P)"""
         raw   = self.query_one("#query-box", TextArea).text.strip()
-        lines = [l for l in raw.splitlines() if not l.strip().startswith("--")]
+        lines = [l for l in raw.splitlines() if not l.strip().startswith(("--", "#"))]
         query = "\n".join(lines).strip()
         if not query:
             self.notify("No query to explain", severity="warning")
@@ -790,6 +795,19 @@ class GhostBaseApp(App):
         dt      = self.query_one("#data-table", DataTable)
         status  = self.query_one("#status-label", Label)
         res_cnt = self.query_one("#results-count", Label)
+
+        # Central safety verification before EXPLAIN
+        statements = self.db.split_statements(query)
+        if len(statements) > 1:
+            status.update("[bold red]EXPLAIN ERROR[/] Multiple statements not allowed in EXPLAIN")
+            self.notify("EXPLAIN only supports a single SQL statement.", severity="error", timeout=4)
+            return
+
+        is_destructive, reason = self.db.check_safety(query, is_safe_mode=self.safe_mode)
+        if self.safe_mode and is_destructive:
+            status.update(f"[bold red]BLOCKED[/] {reason}")
+            self.notify(f"Cannot explain query in Safe Mode: {reason}", severity="error", timeout=5)
+            return
 
         res = self.db.explain_query(query)
         dt.clear(columns=True)
@@ -816,6 +834,10 @@ class GhostBaseApp(App):
 
     def action_toggle_safe_mode(self):
         """Toggle Production Safe Mode (Ctrl+S) - Fail-closed"""
+        if getattr(self, "_cli_read_only", False):
+            self.notify("CLI --read-only flag is active. Safe Mode is locked and cannot be disabled.", severity="warning", timeout=4)
+            return
+
         new_mode = not self.safe_mode
         self._pending_destructive_query = None
         self._pending_destructive_time = 0.0

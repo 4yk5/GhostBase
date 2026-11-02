@@ -354,15 +354,37 @@ class DatabaseEngine:
     # --- Query safety and formatting ---
 
     @staticmethod
+    def _mask_strings(sql: str) -> Tuple[str, List[str]]:
+        """
+        Extract and mask string literals (data values):
+        - Plain untagged dollar-quotes: $$...$$
+        - Tagged dollar-quotes: $tag$...$tag$
+        - PostgreSQL E-strings: E'...'
+        - Standard single-quoted strings: '...'
+        """
+        literals = []
+        def _repl(m):
+            idx = len(literals)
+            literals.append(m.group(0))
+            return f"___GB_STR_{idx}___"
+
+        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|E'(?:\\.|''|[^'\\])*'|'(?:\\.|''|[^'\\])*')"
+        masked = re.sub(pattern, _repl, sql)
+        return masked, literals
+
+    @staticmethod
+    def _strip_comments(sql: str) -> str:
+        """Strip block comments /* ... */, line comments -- ..., and MySQL # ..."""
+        c = re.sub(r"/\*[\s\S]*?\*/", " ", sql)
+        c = re.sub(r"--[^\r\n]*", " ", c)
+        c = re.sub(r"#[^\r\n]*", " ", c)
+        return c
+
+    @staticmethod
     def _mask_strings_and_literals(sql: str) -> Tuple[str, List[str]]:
         """
         Extract and mask all string literals and quoted identifiers:
-        - Plain untagged dollar-quotes: $$...$$
-        - Tagged dollar-quotes with strict matching backreference \2: $tag$...$tag$
-        - PostgreSQL E-strings: E'...' (supporting backslash escapes \')
-        - Standard single-quoted strings: '...' (supporting \' and '')
-        - Standard double-quoted strings / identifiers: "..."
-        - MySQL backtick identifiers: `...`
+        Used by SQL formatter to preserve both literal values and identifier cases.
         """
         literals = []
         def _repl(m):
@@ -370,31 +392,78 @@ class DatabaseEngine:
             literals.append(m.group(0))
             return f" ___GB_LIT_{idx}___ "
 
-        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|E'(?:\\.|''|[^'\\])*'|'(?:\\.|''|[^'\\])*'|\"(?:\\.|\"\"|[^\"])*\"|`(?:``|[^`])*`)"
+        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|E'(?:\\.|''|[^'\\])*'|'(?:\\.|''|[^'\\])*'|\"(?:\\.|\"\"|[^\"])*\"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\])"
         masked = re.sub(pattern, _repl, sql)
         return masked, literals
 
-    def check_safety(self, query: str, is_safe_mode: bool = False) -> Tuple[bool, str]:
+    @classmethod
+    def split_statements(cls, sql: str) -> List[str]:
         """
-        Check query safety.
-        - Strings and dollar-quotes are masked FIRST so inner text ('WHERE ...') does not bypass checks.
-        - Comments (-- , /* */, and MySQL #) are stripped second.
-        - In Safe Mode: Enforces strict Read-Only operations, blocking all DML, DDL, DO blocks, CALL, MERGE, SET, and state-modifying functions.
-        - In Normal Mode: Intercepts unconstrained destructive queries.
+        Split a multi-statement SQL script into individual statements by semicolon.
+        Guarantees that semicolons inside string literals, dollar quotes, comments,
+        and quoted identifiers do not cause incorrect statement boundaries.
         """
-        # 1. Mask all string literals and dollar-quoted strings FIRST
-        masked, _ = self._mask_strings_and_literals(query)
+        # Mask both strings and quoted identifiers so semicolons inside them are preserved
+        tokens = []
+        def _repl_tok(m):
+            idx = len(tokens)
+            tokens.append(m.group(0))
+            return f"___GB_TOK_{idx}___"
 
-        # 2. Strip block comments /* ... */, line comments -- ..., and MySQL # ...
-        q_no_comments = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
-        q_no_comments = re.sub(r"--[^\r\n]*", " ", q_no_comments)
-        q_no_comments = re.sub(r"#[^\r\n]*", " ", q_no_comments)
+        pattern = r"(\$\$[\s\S]*?\$\$|\$([a-zA-Z_]\w*)\$[\s\S]*?\$\2\$|E'(?:\\.|''|[^'\\])*'|'(?:\\.|''|[^'\\])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\])"
+        masked = re.sub(pattern, _repl_tok, sql)
+        clean = cls._strip_comments(masked)
+        parts = clean.split(";")
+        stmts = []
+        for p in parts:
+            p_str = p.strip()
+            if p_str:
+                for idx, tok in enumerate(tokens):
+                    p_str = p_str.replace(f"___GB_TOK_{idx}___", tok)
+                stmts.append(p_str)
+        return stmts
 
-        q_clean = q_no_comments.strip()
-        if not q_clean:
+    @staticmethod
+    def _normalize_identifiers_for_safety(sql: str) -> str:
+        """
+        Normalize quoted identifiers ("set_config", `setval`, [col]) for safety checks:
+        - Quoted function/object names (e.g. "set_config", "setval", "delete") are unquoted
+          so that identifier quotes cannot conceal restricted keywords or functions.
+        - If an identifier is literally "WHERE", it represents a column/alias name and CANNOT
+          act as a SQL clause keyword; it is masked to ___GB_ID_WHERE___ so it does not
+          falsely satisfy the WHERE requirement of UPDATE/DELETE.
+        """
+        def _repl_ident(m):
+            raw = m.group(0)
+            inner = raw[1:-1]
+            if raw.startswith('"'):
+                inner = inner.replace('""', '"')
+            elif raw.startswith('`'):
+                inner = inner.replace('``', '`')
+            elif raw.startswith('['):
+                inner = inner.replace(']]', ']')
+
+            if inner.strip().upper() == "WHERE":
+                return " ___GB_ID_WHERE___ "
+            return f" {inner} "
+
+        ident_pattern = r"(\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[(?:\]\]|[^\]])*\])"
+        return re.sub(ident_pattern, _repl_ident, sql)
+
+    def _check_single_statement_safety(self, stmt: str, is_safe_mode: bool = False) -> Tuple[bool, str]:
+        """Evaluate safety on an individual, isolated SQL statement."""
+        # 1. Mask data literals (single quotes, dollar-quotes, E-strings)
+        masked, _ = self._mask_strings(stmt)
+
+        # 2. Strip comments
+        q_no_comments = self._strip_comments(masked)
+
+        # 3. Normalize identifiers (unquote "set_config", protect "where" columns)
+        q_norm = self._normalize_identifiers_for_safety(q_no_comments).strip()
+        if not q_norm:
             return False, ""
 
-        q_upper = q_clean.upper()
+        q_upper = q_norm.upper()
 
         # SAFE MODE: STRICT READ-ONLY ENFORCEMENT
         if is_safe_mode:
@@ -415,11 +484,11 @@ class DatabaseEngine:
                 (r"\bDO\b", "DO procedural block"),
                 (r"\bCALL\b", "CALL stored procedure"),
                 (r"\bMERGE\b", "MERGE statement"),
-                (r"\bSET_CONFIG\s*\(", "SET_CONFIG parameter modification"),
-                (r"\bSETVAL\s*\(", "SETVAL sequence mutation"),
-                (r"\bNEXTVAL\s*\(", "NEXTVAL sequence advance"),
-                (r"\bCURRVAL\s*\(", "CURRVAL sequence check"),
-                (r"\bLASTVAL\s*\(", "LASTVAL sequence check"),
+                (r"\bSET_CONFIG\b", "SET_CONFIG parameter modification"),
+                (r"\bSETVAL\b", "SETVAL sequence mutation"),
+                (r"\bNEXTVAL\b", "NEXTVAL sequence advance"),
+                (r"\bCURRVAL\b", "CURRVAL sequence check"),
+                (r"\bLASTVAL\b", "LASTVAL sequence check"),
                 (r"\bPG_TERMINATE_BACKEND\b", "PG_TERMINATE_BACKEND admin call"),
                 (r"\bPG_CANCEL_BACKEND\b", "PG_CANCEL_BACKEND admin call"),
                 (r"\bLO_IMPORT\b", "LO_IMPORT filesystem read"),
@@ -437,7 +506,7 @@ class DatabaseEngine:
 
             return False, ""
 
-        # NORMAL MODE: Destructive Guard (Unconstrained modifications & schema drops)
+        # NORMAL MODE: Destructive Guard (Unconstrained modifications & schema drops per statement)
         if re.search(r"\bDROP\s+(TABLE|DATABASE|SCHEMA|VIEW)\b", q_upper):
             return True, "DROP operation detected"
         if re.search(r"\bTRUNCATE\b", q_upper):
@@ -451,21 +520,56 @@ class DatabaseEngine:
 
         return False, ""
 
-    def explain_query(self, query: str) -> Dict[str, Any]:
-        masked, literals = self._mask_strings_and_literals(query)
-        clean_q = re.sub(r"/\*[\s\S]*?\*/", " ", masked)
-        clean_q = re.sub(r"--[^\r\n]*", " ", clean_q)
-        clean_q = re.sub(r"#[^\r\n]*", " ", clean_q).strip().rstrip(";")
-        for idx, orig in enumerate(literals):
-            clean_q = clean_q.replace(f"___GB_LIT_{idx}___", orig)
+    def check_safety(self, query: str, is_safe_mode: bool = False) -> Tuple[bool, str]:
+        """
+        Check script safety across all statements.
+        Multi-statement queries are evaluated individually: if ANY statement is destructive
+        or violates Safe Mode, the entire batch is flagged.
+        """
+        statements = self.split_statements(query)
+        if not statements:
+            return False, ""
 
-        if not clean_q:
+        for stmt in statements:
+            is_dest, reason = self._check_single_statement_safety(stmt, is_safe_mode=is_safe_mode)
+            if is_dest:
+                return True, reason
+
+        return False, ""
+
+    def explain_query(self, query: str) -> Dict[str, Any]:
+        """
+        Explain query execution plan.
+        Strictly allows only a single read statement. Multi-statement batches or destructive
+        operations are strictly rejected to prevent execution bypasses.
+        """
+        statements = self.split_statements(query)
+        if not statements:
             return {"success": False, "error": "Query is empty"}
+        if len(statements) > 1:
+            return {
+                "success": False,
+                "error": "EXPLAIN only supports a single SQL statement. Multiple statements are not permitted.",
+            }
+
+        single_q = statements[0].strip().rstrip(";")
+
+        # Validate safety on the single statement to be explained
+        is_dest, reason = self.check_safety(single_q, is_safe_mode=False)
+
+        # Detect EXPLAIN ANALYZE on destructive queries (PostgreSQL executes the query under ANALYZE)
+        masked, _ = self._mask_strings(single_q)
+        clean = self._strip_comments(masked).strip().upper()
+        if re.search(r"\b(ANALYZE|EXECUTE)\b", clean) and is_dest:
+            return {
+                "success": False,
+                "error": f"EXPLAIN with execution side-effects on destructive statements is blocked: {reason}",
+            }
 
         if self.db_type == "sqlite":
-            explain_sql = f"EXPLAIN QUERY PLAN {clean_q};"
+            explain_sql = f"EXPLAIN QUERY PLAN {single_q};"
         else:
-            explain_sql = f"EXPLAIN {clean_q};"
+            explain_sql = f"EXPLAIN {single_q};"
         return self.execute_query(explain_sql)
 
     @staticmethod
@@ -528,6 +632,33 @@ class DatabaseEngine:
         result_parts.append(sql_text.strip())
         return "\n".join(result_parts)
 
+    @classmethod
+    def is_mysql_select_needing_limit(cls, query: str) -> bool:
+        """
+        Check if a query is a top-level SELECT/WITH in MySQL that lacks a top-level LIMIT clause.
+        Guarantees that SHOW, DESCRIBE, EXPLAIN, and subqueries with LIMIT are handled correctly.
+        """
+        masked, _ = cls._mask_strings(query)
+        clean = cls._strip_comments(masked).strip()
+
+        # Must start with SELECT or WITH
+        if not re.match(r"^(SELECT|WITH)\b", clean, flags=re.IGNORECASE):
+            return False
+
+        # Check if there is a top-level LIMIT (at parenthesis depth 0)
+        depth = 0
+        tokens = re.split(r"(\(|\)|\bLIMIT\b)", clean, flags=re.IGNORECASE)
+        for token in tokens:
+            if token == "(":
+                depth += 1
+            elif token == ")":
+                if depth > 0:
+                    depth -= 1
+            elif token.upper() == "LIMIT":
+                if depth == 0:
+                    return False  # Already has a top-level LIMIT
+        return True
+
     # --- Query execution ---
 
     def execute_query(self, query: str, max_rows: int = 1000) -> Dict[str, Any]:
@@ -584,7 +715,7 @@ class DatabaseEngine:
             # MySQL optimization: Auto-apply LIMIT on SELECTs without LIMIT to prevent server unbuffered socket drain
             exec_query = query
             if self.db_type == "mysql" and not is_write_dml:
-                if not re.search(r"\bLIMIT\b", clean_q, flags=re.IGNORECASE):
+                if self.is_mysql_select_needing_limit(query):
                     exec_query = query.rstrip().rstrip(";") + f" LIMIT {max_rows + 1};"
 
             cur = self.conn.cursor()

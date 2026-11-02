@@ -302,9 +302,145 @@ def test_result_set_memory_limit():
     print("  [+] Result Set Memory Limit: PASS")
 
 
+def test_quoted_identifier_safety():
+    print("[*] 10. Testing Quoted Identifier Safety (Safe Mode & WHERE Column Guards)...")
+    db = DatabaseEngine(":memory:")
+
+    # Safe Mode: Quoted set_config, setval, nextval must NOT bypass detection
+    quoted_unsafe_queries = [
+        'SELECT pg_catalog."set_config"(\'default_transaction_read_only\', \'off\', false);',
+        'SELECT "setval"(\'users_id_seq\', 1, false);',
+        'SELECT "nextval"(\'users_id_seq\');',
+        'SELECT `set_config`(\'default_transaction_read_only\', \'off\', false);',
+        'SELECT [setval](\'users_id_seq\', 1);',
+        'SELECT "pg_terminate_backend"(1234);',
+    ]
+    for q in quoted_unsafe_queries:
+        is_dest, r = db.check_safety(q, is_safe_mode=True)
+        assert is_dest, f"VULNERABILITY: Quoted function bypassed Safe Mode: {q}"
+        assert "Safe Mode is active" in r
+
+    # Normal Mode: Column named "where" or `where` must NOT masquerade as WHERE clause
+    col_where_queries = [
+        'UPDATE users SET "where" = 1;',
+        'UPDATE users SET `where` = 1;',
+        'UPDATE users SET [where] = 1;',
+        'DELETE FROM users WHERE false = false;',  # Real WHERE -> safe
+    ]
+    # First 3 must be detected as UPDATE without WHERE
+    for q in col_where_queries[:3]:
+        is_dest, r = db.check_safety(q, is_safe_mode=False)
+        assert is_dest, f"VULNERABILITY: Quoted 'where' column bypassed WHERE check: {q}"
+        assert "UPDATE without WHERE" in r
+
+    # Real WHERE must pass
+    is_dest, r = db.check_safety(col_where_queries[3], is_safe_mode=False)
+    assert not is_dest, f"Valid WHERE clause falsely flagged: {col_where_queries[3]}"
+
+    print("  [+] Quoted Identifier Safety: PASS")
+
+
+def test_multi_statement_safety():
+    print("[*] 11. Testing Multi-Statement SQL Safety Evaluation...")
+    db = DatabaseEngine(":memory:")
+
+    # Multi-statement injection: UPDATE without WHERE followed by SELECT with WHERE
+    multi_bypass = "UPDATE users SET role = 'Admin'; SELECT 1 WHERE true;"
+    is_dest, r = db.check_safety(multi_bypass, is_safe_mode=False)
+    assert is_dest, "VULNERABILITY: Multi-statement UPDATE without WHERE bypassed safety!"
+    assert "UPDATE without WHERE" in r
+
+    # Multi-statement: SELECT followed by unconditional DELETE
+    multi_delete = "SELECT 1; DELETE FROM users;"
+    is_dest, r = db.check_safety(multi_delete, is_safe_mode=False)
+    assert is_dest, "VULNERABILITY: Multi-statement DELETE without WHERE bypassed safety!"
+    assert "DELETE without WHERE" in r
+
+    # Safe multi-statement: Both statements have valid WHERE clauses
+    multi_safe = "UPDATE users SET role = 'Admin' WHERE id = 1; SELECT 1 WHERE true;"
+    is_dest, r = db.check_safety(multi_safe, is_safe_mode=False)
+    assert not is_dest, f"Safe multi-statement wrongly flagged: {multi_safe} ({r})"
+
+    # Safe Mode multi-statement: Any write in any statement must trigger Safe Mode block
+    safe_mode_multi = "SELECT 1; INSERT INTO audit (msg) VALUES ('ok');"
+    is_dest, r = db.check_safety(safe_mode_multi, is_safe_mode=True)
+    assert is_dest, "VULNERABILITY: INSERT in multi-statement bypassed Safe Mode!"
+    assert "Safe Mode is active" in r
+
+    # Statement splitter preserves semicolons inside strings and comments
+    complex_script = "SELECT 'one;two;three' AS s; -- comment; with; semicolons\nSELECT 2;"
+    stmts = db.split_statements(complex_script)
+    assert len(stmts) == 2, f"Expected 2 statements, got {len(stmts)}: {stmts}"
+    assert stmts[0] == "SELECT 'one;two;three' AS s"
+    assert stmts[1] == "SELECT 2"
+
+    print("  [+] Multi-Statement Safety: PASS")
+
+
+def test_explain_query_safety():
+    print("[*] 12. Testing EXPLAIN Query Plan Safety (No Multi-Statement Injection)...")
+    db = DatabaseEngine(":memory:")
+    db.conn.execute("CREATE TABLE users (id INT, role TEXT);")
+    db.conn.execute("INSERT INTO users VALUES (1, 'User');")
+    db.conn.commit()
+
+    # Attempt multi-statement injection via EXPLAIN
+    injection = "SELECT 1; DELETE FROM users;"
+    res = db.explain_query(injection)
+    assert not res["success"], "VULNERABILITY: EXPLAIN allowed multi-statement execution!"
+    assert "single SQL statement" in res["error"]
+
+    # Verify that users table was NOT modified
+    cur = db.conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users;")
+    assert cur.fetchone()[0] == 1, "VULNERABILITY: Table data was modified during EXPLAIN injection!"
+
+    # Normal valid single EXPLAIN
+    valid_res = db.explain_query("SELECT * FROM users WHERE id = 1;")
+    assert valid_res["success"], f"Valid EXPLAIN failed: {valid_res.get('error')}"
+
+    print("  [+] EXPLAIN Query Plan Safety: PASS")
+
+
+def test_mysql_auto_limit_logic():
+    print("[*] 13. Testing MySQL Auto-LIMIT Logic (Top-Level SELECT vs Non-SELECT/Subqueries)...")
+    test_cases = [
+        ("SHOW TABLES;", False),
+        ("SHOW DATABASES;", False),
+        ("DESCRIBE users;", False),
+        ("DESC users;", False),
+        ("EXPLAIN SELECT * FROM users;", False),
+        ("SELECT * FROM users;", True),
+        ("SELECT * FROM users LIMIT 10;", False),
+        ("SELECT * FROM huge WHERE id IN (SELECT id FROM t LIMIT 10);", True),
+        ("WITH cte AS (SELECT 1 AS n LIMIT 5) SELECT * FROM cte;", True),
+        ("WITH cte AS (SELECT 1 AS n) SELECT * FROM cte LIMIT 20;", False),
+    ]
+
+    for q, expected in test_cases:
+        res = DatabaseEngine.is_mysql_select_needing_limit(q)
+        assert res == expected, f"MySQL LIMIT detection failed for: {q} (expected {expected}, got {res})"
+
+    print("  [+] MySQL Auto-LIMIT Logic: PASS")
+
+
+def test_cli_readonly_lock():
+    print("[*] 14. Testing CLI --read-only Immutable Lock...")
+    from app import GhostBaseApp
+    app = GhostBaseApp(db_path=":memory:", read_only=True)
+    assert app.safe_mode is True, "Safe mode should be initialized to True"
+    assert app._cli_read_only is True, "_cli_read_only flag should be True"
+
+    # Attempt to toggle safe mode off
+    app.action_toggle_safe_mode()
+    assert app.safe_mode is True, "VULNERABILITY: CLI --read-only was bypassed via action_toggle_safe_mode!"
+
+    print("  [+] CLI --read-only Immutable Lock: PASS")
+
+
 def main():
     print("\n" + "=" * 60)
-    print("RUNNING EXHAUSTIVE REFINED VERIFICATION TESTS (v0.1.3)")
+    print("RUNNING EXHAUSTIVE REFINED VERIFICATION TESTS (v0.1.5)")
     print("=" * 60)
 
     test_safe_mode_and_comment_bypass()
@@ -316,6 +452,11 @@ def main():
     test_exporter_json_types_and_dialect_sql()
     test_table_quoting_and_cte_export_detection()
     test_result_set_memory_limit()
+    test_quoted_identifier_safety()
+    test_multi_statement_safety()
+    test_explain_query_safety()
+    test_mysql_auto_limit_logic()
+    test_cli_readonly_lock()
 
     print("\n" + "=" * 60)
     print("ALL ANALYST VULNERABILITIES VERIFIED AND 100% PASSING!")

@@ -112,6 +112,9 @@ def main():
     try:
         app = GhostBaseApp(db_path=conn, read_only=read_only)
         app.run()
+        ret = getattr(app, "return_code", 0)
+        if isinstance(ret, int) and ret != 0:
+            sys.exit(ret)
     except Exception as e:
         print(f"\n[GhostBase Error] Failed to connect to database: {e}\n")
         sys.exit(1)
